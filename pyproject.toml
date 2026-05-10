@@ -15,7 +15,9 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
 ]
-dependencies = []
+dependencies = [
+    "pydantic>=2,<3",
+]
 
 [dependency-groups]
 dev = [
@@ -29,6 +31,7 @@ build-backend = "uv_build"
 [tool.mypy]
 python_version = "3.11"
 mypy_path = ["src"]
+plugins = ["pydantic.mypy"]
 explicit_package_bases = true
 strict = true
 disallow_any_generics = true
@@ -56,8 +59,15 @@ enable_error_code = [
     "unused-awaitable",
 ]
 
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+
 [tool.pylint.format]
 max-line-length = 79
+
+[tool.pylint.design]
+exclude-too-few-public-methods = ["pydantic.*"]
 
 [tool.ruff]
 line-length = 79

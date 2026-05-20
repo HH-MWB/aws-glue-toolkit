@@ -16,6 +16,7 @@ from json import loads
 from typing import Final
 
 __all__ = [
+    "SUPPORTED_GLUE_VERSIONS",
     "GlueCoreEngines",
     "GlueRuntimeMetadata",
     "GlueTableFormats",
@@ -29,6 +30,9 @@ _FILES: Final[dict[str, Traversable]] = {
     "5.0": _VERSIONS.joinpath("glue_5_0.json"),
     "5.1": _VERSIONS.joinpath("glue_5_1.json"),
 }
+
+# Keys match ``_FILES`` exactly (bundled JSON per Glue API version).
+SUPPORTED_GLUE_VERSIONS: Final[frozenset[str]] = frozenset(_FILES)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -73,22 +77,20 @@ def load_glue_runtime_metadata(glue_version: str) -> GlueRuntimeMetadata:
 
     Args:
         glue_version: Glue ``GlueVersion`` string (same value as job
-            configuration). Must match a key in ``_FILES`` exactly (no
-            stripping or aliases).
+            configuration). Must be a key in ``_FILES``; callers that build
+            from :class:`~aws_glue_toolkit.glue_pyproject.PyProject` already
+            enforce this via
+            :data:`~aws_glue_toolkit.glue_runtime.SUPPORTED_GLUE_VERSIONS`.
 
     Returns:
         Frozen snapshot of engine, table-format, and Python package versions.
 
     Raises:
-        ValueError: ``glue_version`` is not in the supported set.
+        KeyError: ``glue_version`` is not a key in ``_FILES``.
 
     """
-    # 1. Resolve packaged file (unknown ``glue_version`` → ``KeyError``).
-    try:
-        resource = _FILES[glue_version]
-    except KeyError:
-        msg = f"unsupported Glue version {glue_version!r}"
-        raise ValueError(msg) from None
+    # 1. Bundled JSON path (invalid key → ``KeyError``).
+    resource = _FILES[glue_version]
 
     # 2. Read UTF-8, parse JSON (schema matches versions/*.json).
     raw = resource.read_text(encoding="utf-8")

@@ -16,7 +16,6 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from pathlib import Path
-from shutil import which
 from subprocess import CalledProcessError, run  # nosec B404
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Final, NamedTuple
@@ -163,7 +162,7 @@ def uv_pip_compile(
 def resolve_glue_dependencies(
     pyproject: PyProject,
     *,
-    uv_path: str | None = None,
+    uv_exe: str,
     python_platform: str = _DEFAULT_PYTHON_PLATFORM,
 ) -> dict[str, str]:
     """Resolve job dependencies including transitives for the Glue version.
@@ -173,7 +172,7 @@ def resolve_glue_dependencies(
 
     Args:
         pyproject: Validated Glue job ``pyproject.toml``.
-        uv_path: Explicit path to ``uv``, or ``None`` to resolve via ``PATH``.
+        uv_exe: Path to the ``uv`` executable (caller must locate it).
         python_platform: ``uv pip compile --python-platform``. Defaults to
             x86_64 manylinux2014; use ``aarch64-manylinux2014`` on Graviton.
 
@@ -182,18 +181,13 @@ def resolve_glue_dependencies(
         contains ``==``. Empty when there are no such lines.
 
     Raises:
-        FileNotFoundError: ``uv_path`` was not set and ``uv`` was not found on
-            ``PATH``.
-        ValueError: ``glue_version`` is not in the supported bundled set.
-        UvPipCompileError: ``uv pip compile`` exited non-zero.
+        KeyError: ``glue_version`` is not a key in bundled metadata (should
+            not occur when :class:`~aws_glue_toolkit.glue_pyproject.PyProject`
+            was validated).
+        UvPipCompileError: ``uv pip compile`` exited non-zero (conflicts or
+            other resolver failure; message is ``uv`` stderr/stdout).
 
     """
-    # Find ``uv``: use ``uv_path`` or locate ``uv`` on ``PATH``.
-    uv_exe = uv_path if uv_path is not None else which("uv")
-    if uv_exe is None:
-        msg = "uv executable not found; install uv or pass uv_path="
-        raise FileNotFoundError(msg)
-
     # Load pins and engine metadata for ``glue_version``.
     metadata = load_glue_runtime_metadata(
         pyproject.tool.aws_glue_toolkit.glue_version,

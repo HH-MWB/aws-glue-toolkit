@@ -11,11 +11,17 @@ Example:
 
 Unknown keys are ignored. ``project.name`` / ``project.version`` default to
 ``None``; ``project.dependencies`` to ``[]``. ``tool.aws_glue_toolkit`` is
-always set; missing ``glue_version`` defaults to ``5.1``.
+always set; missing ``glue_version`` defaults to ``5.1``. ``glue_version``
+must match a bundled release (see
+:data:`~aws_glue_toolkit.glue_runtime.SUPPORTED_GLUE_VERSIONS`).
 
 """
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
+
+from aws_glue_toolkit.glue_runtime import SUPPORTED_GLUE_VERSIONS
 
 __all__ = [
     "AwsGlueToolkit",
@@ -46,6 +52,9 @@ class Project(BaseModel):
 class AwsGlueToolkit(BaseModel):
     """Settings under ``[tool.aws-glue-toolkit]``.
 
+    ``glue_version`` must be a key in bundled runtime metadata (same set as
+    :data:`~aws_glue_toolkit.glue_runtime.SUPPORTED_GLUE_VERSIONS`).
+
     Example:
         [tool.aws-glue-toolkit]
         glue_version = "5.0"
@@ -54,7 +63,9 @@ class AwsGlueToolkit(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    glue_version: str = "5.1"
+    glue_version: Literal[  # type: ignore[valid-type]
+        *SUPPORTED_GLUE_VERSIONS,
+    ] = "5.1"
 
 
 class Tool(BaseModel):

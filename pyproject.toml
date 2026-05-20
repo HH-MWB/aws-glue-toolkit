@@ -17,7 +17,11 @@ classifiers = [
 ]
 dependencies = [
     "pydantic>=2,<3",
+    "cyclopts>=4,<5",
 ]
+
+[project.scripts]
+gtk = "aws_glue_toolkit.cli:app"
 
 [dependency-groups]
 dev = [

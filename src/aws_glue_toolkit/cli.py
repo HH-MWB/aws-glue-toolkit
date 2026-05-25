@@ -1,16 +1,21 @@
-"""Cyclopts CLI for the AWS Glue Toolkit (``gtk``).
+"""``gtk`` CLI entry point.
 
-Registers commands that read a Glue job ``pyproject.toml``, validate it, and
-resolve dependencies against bundled runtime pins via ``uv pip compile``.
+Registers Cyclopts commands and orchestrates the toolkit workflow:
 
-``gtk check`` returns :attr:`GtkExitCode.OK` (panel on :data:`app.console`) or
-:attr:`GtkExitCode.DEPENDENCY_CONFLICT` (panel on :data:`app.error_console`).
-Other failures raise :class:`GlueToolkitError` (codes 2-6 on
-:data:`app.error_console`; see :class:`GtkExitCode`).
+- :func:`check` — load a job ``pyproject.toml`` and verify dependencies resolve
+  against Glue runtime pins.
+- :func:`build` — resolve packageable dependencies and write a
+  ``.gluewheels.zip`` artifact.
+
+Translates domain errors from :mod:`aws_glue_toolkit.pyproject`,
+:mod:`aws_glue_toolkit.dependencies`, and :mod:`aws_glue_toolkit.wheels` into
+process exit codes and Rich console output. Does not implement resolution or
+packaging logic itself.
 
 Example:
     gtk check
     gtk check ./my-glue-job
+    gtk build ./my-glue-job
 
 """
 
@@ -20,20 +25,31 @@ from enum import IntEnum
 from functools import wraps
 from pathlib import Path
 from shutil import which
-from tomllib import TOMLDecodeError, loads
-from typing import TYPE_CHECKING, ParamSpec, cast
+from typing import TYPE_CHECKING, Final, ParamSpec, cast
 
 from cyclopts import App
-from pydantic import ValidationError
 from pydantic.types import (
     DirectoryPath,  # noqa: TC002  # CLI coercion needs runtime type
 )
 from rich.panel import Panel
 
-from aws_glue_toolkit.glue_pyproject import PyProject
-from aws_glue_toolkit.glue_resolve import (
-    UvPipCompileError,
-    resolve_glue_dependencies,
+from aws_glue_toolkit.dependencies import (
+    DependencyConflictError,
+    resolve_dependencies,
+)
+from aws_glue_toolkit.pyproject import (
+    InvalidPyProjectError,
+    InvalidTomlError,
+    MissingPyProjectError,
+    PyProject,
+    PyProjectError,
+    PyProjectUnreadableError,
+    load_pyproject,
+)
+from aws_glue_toolkit.wheels import (
+    GlueWheelsBuildError,
+    build_gluewheels_zip,
+    glue_wheels_zip_name,
 )
 
 if TYPE_CHECKING:
@@ -43,16 +59,11 @@ __all__ = ["app"]
 
 P = ParamSpec("P")
 
+# --- Exit codes and errors ---
+
 
 class GtkExitCode(IntEnum):
-    """Process exit codes for ``gtk`` commands.
-
-    ``check`` returns :attr:`OK` or :attr:`DEPENDENCY_CONFLICT` as its ``int``
-    result. :attr:`MISSING_PYPROJECT` through :attr:`UV_NOT_FOUND` are carried
-    on :class:`GlueToolkitError`; :func:`gtk_command` prints
-    :attr:`GlueToolkitError.error_message` and returns the code.
-
-    """
+    """Process exit codes for ``gtk`` commands."""
 
     OK = 0
     DEPENDENCY_CONFLICT = 1
@@ -61,30 +72,19 @@ class GtkExitCode(IntEnum):
     INVALID_TOML = 4
     INVALID_PYPROJECT = 5
     UV_NOT_FOUND = 6
+    BUILD_FAILED = 7
 
 
 class GlueToolkitError(Exception):
-    """Expected CLI failure with a user-facing message and exit code.
-
-    Attributes:
-        exit_code: Process exit code (:class:`GtkExitCode` as ``int``).
-        error_message: Text printed via :data:`app.error_console` by
-            :func:`gtk_command`.
-
-    """
+    """Expected CLI failure with a user-facing message and exit code."""
 
     def __init__(self, exit_code: GtkExitCode, error_message: str) -> None:
-        """Store ``exit_code`` and ``error_message`` for the CLI shell.
-
-        Args:
-            exit_code: Exit status for Cyclopts (see :class:`GtkExitCode`).
-            error_message: Plain text for :data:`app.error_console`.
-
-        """
         self.exit_code = int(exit_code)
         self.error_message = error_message
         super().__init__()
 
+
+# --- App and command decorator ---
 
 app = App(
     help="AWS Glue development lifecycle toolkit.",
@@ -93,20 +93,7 @@ app = App(
 
 
 def gtk_command(fn: Callable[P, int]) -> Callable[P, int]:
-    """Register on :data:`app` with :class:`GlueToolkitError` handling.
-
-    Wraps ``fn`` so :class:`GlueToolkitError` prints
-    :attr:`GlueToolkitError.error_message` on :data:`app.error_console` and
-    returns :attr:`GlueToolkitError.exit_code`; otherwise returns ``fn``'s
-    ``int``.
-
-    Args:
-        fn: Command that returns a process exit code.
-
-    Returns:
-        Registered command (via :meth:`App.command`).
-
-    """
+    """Register on :data:`app` with :class:`GlueToolkitError` handling."""
 
     @wraps(fn)
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> int:
@@ -119,69 +106,8 @@ def gtk_command(fn: Callable[P, int]) -> Callable[P, int]:
     return cast("Callable[P, int]", app.command(wrapper))
 
 
-def read_pyproject(project_dir: Path) -> str:
-    """Read ``project_dir/pyproject.toml`` as UTF-8 text.
-
-    Args:
-        project_dir: Glue job root directory.
-
-    Returns:
-        Raw file contents.
-
-    Raises:
-        GlueToolkitError: Missing file (:attr:`GtkExitCode.MISSING_PYPROJECT`)
-            or OS read error (:attr:`GtkExitCode.PYPROJECT_UNREADABLE`).
-
-    """
-    path = project_dir / "pyproject.toml"
-    try:
-        return path.read_text(encoding="utf-8")
-    except FileNotFoundError as e:
-        raise GlueToolkitError(
-            GtkExitCode.MISSING_PYPROJECT,
-            f"no pyproject.toml at {path}",
-        ) from e
-    except OSError as e:
-        raise GlueToolkitError(
-            GtkExitCode.PYPROJECT_UNREADABLE,
-            f"cannot read pyproject.toml at {path}: {e}",
-        ) from e
-
-
-def parse_pyproject(text: str) -> PyProject:
-    """Parse TOML into :class:`~aws_glue_toolkit.glue_pyproject.PyProject`.
-
-    Args:
-        text: Raw ``pyproject.toml`` body.
-
-    Returns:
-        Validated project model.
-
-    Raises:
-        GlueToolkitError: Invalid TOML (:attr:`GtkExitCode.INVALID_TOML`) or
-            schema (:attr:`GtkExitCode.INVALID_PYPROJECT`), including bad
-            ``glue_version``.
-
-    """
-    try:
-        return PyProject.model_validate(loads(text))
-    except TOMLDecodeError as e:
-        raise GlueToolkitError(
-            GtkExitCode.INVALID_TOML,
-            f"invalid TOML: {e}",
-        ) from e
-    except ValidationError as e:
-        raise GlueToolkitError(
-            GtkExitCode.INVALID_PYPROJECT,
-            f"invalid pyproject: {e}",
-        ) from e
-
-
 def get_uv_executable() -> str:
     """Locate the ``uv`` executable on ``PATH``.
-
-    Returns:
-        Absolute path to ``uv``.
 
     Raises:
         GlueToolkitError: Not found (:attr:`GtkExitCode.UV_NOT_FOUND`).
@@ -196,41 +122,79 @@ def get_uv_executable() -> str:
     return uv
 
 
+# --- Tooling helpers ---
+
+_PYPROJECT_EXIT: Final[dict[type[PyProjectError], GtkExitCode]] = {
+    MissingPyProjectError: GtkExitCode.MISSING_PYPROJECT,
+    PyProjectUnreadableError: GtkExitCode.PYPROJECT_UNREADABLE,
+    InvalidTomlError: GtkExitCode.INVALID_TOML,
+    InvalidPyProjectError: GtkExitCode.INVALID_PYPROJECT,
+}
+
+
+def _load_pyproject(project_dir: Path) -> PyProject:
+    try:
+        return load_pyproject(project_dir)
+    except PyProjectError as e:
+        exit_code = _PYPROJECT_EXIT.get(type(e), GtkExitCode.INVALID_PYPROJECT)
+        raise GlueToolkitError(exit_code, str(e)) from e
+
+
+# --- UI helpers ---
+
+
+def _print_dependency_conflict() -> int:
+    app.error_console.print(
+        Panel(
+            "Requirements are unsatisfiable with bundled Glue pins.",
+            title="[bold red]Conflicts detected[/]",
+            border_style="red",
+        ),
+    )
+    return GtkExitCode.DEPENDENCY_CONFLICT
+
+
+def _run_build(pyproject: PyProject, output_path: Path) -> int:
+    try:
+        uv_exe = get_uv_executable()
+        resolved = resolve_dependencies(
+            pyproject,
+            uv_exe=uv_exe,
+            exclude_builtins=True,
+        )
+        result = build_gluewheels_zip(
+            resolved,
+            output_path,
+            uv_exe=uv_exe,
+        )
+    except DependencyConflictError:
+        return _print_dependency_conflict()
+    except GlueWheelsBuildError as e:
+        raise GlueToolkitError(
+            GtkExitCode.BUILD_FAILED,
+            str(e),
+        ) from e
+    app.console.print(
+        Panel(
+            f"Wrote {result.output_path} ({result.wheel_count} wheels).",
+            title="[bold green]Build complete[/]",
+            border_style="green",
+        ),
+    )
+    return GtkExitCode.OK
+
+
+# --- Commands ---
+
+
 @gtk_command
 def check(project_dir: DirectoryPath = Path()) -> int:
-    """Check job dependencies against bundled Glue runtime pins.
-
-    Reads ``pyproject.toml`` under ``project_dir`` and runs
-    :func:`~aws_glue_toolkit.glue_resolve.resolve_glue_dependencies`.
-
-    Args:
-        project_dir: Glue job root (contains ``pyproject.toml``). Defaults to
-            the current working directory.
-
-    Returns:
-        :attr:`GtkExitCode.OK` when compile succeeds (green Rich panel on
-        :data:`app.console`). :attr:`GtkExitCode.DEPENDENCY_CONFLICT` when
-        requirements are unsatisfiable (red panel on :data:`app.error_console`;
-        ``uv`` stderr is not shown).
-
-    Raises:
-        GlueToolkitError: Missing or invalid project file, or ``uv`` not on
-            ``PATH`` (exit codes :attr:`GtkExitCode.MISSING_PYPROJECT` through
-            :attr:`GtkExitCode.UV_NOT_FOUND` via :func:`gtk_command`).
-
-    """
-    pyproject = parse_pyproject(read_pyproject(project_dir.resolve()))
+    """Check job dependencies against bundled Glue runtime pins."""
+    pyproject = _load_pyproject(project_dir.resolve())
     try:
-        resolve_glue_dependencies(pyproject, uv_exe=get_uv_executable())
-    except UvPipCompileError:
-        app.error_console.print(
-            Panel(
-                "Requirements are unsatisfiable with bundled Glue pins.",
-                title="[bold red]Conflicts detected[/]",
-                border_style="red",
-            ),
-        )
-        return GtkExitCode.DEPENDENCY_CONFLICT
+        resolve_dependencies(pyproject, uv_exe=get_uv_executable())
+    except DependencyConflictError:
+        return _print_dependency_conflict()
     app.console.print(
         Panel(
             "Dependencies resolve against Glue runtime pins.",
@@ -239,3 +203,11 @@ def check(project_dir: DirectoryPath = Path()) -> int:
         ),
     )
     return GtkExitCode.OK
+
+
+@gtk_command
+def build(project_dir: DirectoryPath = Path()) -> int:
+    """Build a ``.gluewheels.zip`` artifact from ``pyproject.toml``."""
+    root = project_dir.resolve()
+    pyproject = _load_pyproject(root)
+    return _run_build(pyproject, root / glue_wheels_zip_name(pyproject))

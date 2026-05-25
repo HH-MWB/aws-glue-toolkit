@@ -1,10 +1,13 @@
-"""AWS Glue ETL runtime version pins for supported ``GlueVersion`` values.
+"""Bundled AWS Glue runtime metadata.
 
-This module exposes frozen records describing what ships inside a Glue Spark
-job for a given API version string (e.g. Spark, Python, Scala, Hudi, Iceberg,
-Delta Lake, and preinstalled Python wheels). Values are read from JSON files
-bundled under ``aws_glue_toolkit/versions/``—one file per supported version,
-selected by the internal ``_FILES`` map.
+Loads version-specific JSON from ``aws_glue_toolkit/versions/`` and exposes
+frozen records for each supported Glue release: engine versions (Spark, Python,
+Scala), open table formats, and preinstalled Python package pins.
+
+:data:`SUPPORTED_GLUE_VERSIONS` and :func:`load_glue_runtime_metadata` are the
+single source of truth for what ships in a Glue job environment. Used by
+:mod:`aws_glue_toolkit.dependencies` as compile constraints and as the
+built-in package list when filtering wheel artifacts.
 
 """
 
@@ -78,9 +81,9 @@ def load_glue_runtime_metadata(glue_version: str) -> GlueRuntimeMetadata:
     Args:
         glue_version: Glue ``GlueVersion`` string (same value as job
             configuration). Must be a key in ``_FILES``; callers that build
-            from :class:`~aws_glue_toolkit.glue_pyproject.PyProject` already
+            from :class:`~aws_glue_toolkit.pyproject.PyProject` already
             enforce this via
-            :data:`~aws_glue_toolkit.glue_runtime.SUPPORTED_GLUE_VERSIONS`.
+            :data:`~aws_glue_toolkit.runtime.SUPPORTED_GLUE_VERSIONS`.
 
     Returns:
         Frozen snapshot of engine, table-format, and Python package versions.
@@ -89,14 +92,9 @@ def load_glue_runtime_metadata(glue_version: str) -> GlueRuntimeMetadata:
         KeyError: ``glue_version`` is not a key in ``_FILES``.
 
     """
-    # 1. Bundled JSON path (invalid key → ``KeyError``).
     resource = _FILES[glue_version]
-
-    # 2. Read UTF-8, parse JSON (schema matches versions/*.json).
     raw = resource.read_text(encoding="utf-8")
     payload = loads(raw)
-
-    # 3. Build frozen dataclasses from payload (versions/*.json schema).
     return GlueRuntimeMetadata(
         glue_version=glue_version,
         core_engines=GlueCoreEngines(**payload["core_engines"]),

@@ -1,12 +1,13 @@
-"""AWS Glue Toolkit — CLI utilities for the Glue job development lifecycle.
+"""AWS Glue Toolkit — develop and package Python dependencies for Glue jobs.
 
-Package modules:
+Modules:
 
-- :mod:`aws_glue_toolkit.pyproject` — ``pyproject.toml`` schema and loading
-- :mod:`aws_glue_toolkit.runtime` — bundled Glue version metadata
-- :mod:`aws_glue_toolkit.dependencies` — dependency resolution
-- :mod:`aws_glue_toolkit.wheels` — ``.gluewheels.zip`` artifact build
-- :mod:`aws_glue_toolkit.cli` — ``gtk`` command-line entry point
+- :mod:`aws_glue_toolkit.pyproject` — read and validate job ``pyproject.toml``;
+  returns :class:`~aws_glue_toolkit.pyproject.GlueJobProject`
+- :mod:`aws_glue_toolkit.runtime` — bundled per-version Glue runtime pins
+- :mod:`aws_glue_toolkit.dependencies` — resolve dependencies with ``uv``
+- :mod:`aws_glue_toolkit.wheels` — build ``.gluewheels.zip`` artifacts
+- :mod:`aws_glue_toolkit.cli` — ``gtk`` CLI
 
 """
 

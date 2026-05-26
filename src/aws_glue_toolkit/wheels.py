@@ -1,17 +1,19 @@
-"""Glue ``.gluewheels.zip`` wheel artifact packaging.
+"""Build AWS Glue ``.gluewheels.zip`` wheel archives.
 
-Takes a :class:`~aws_glue_toolkit.dependencies.ResolvedDependencies` value
-(typically from :func:`~aws_glue_toolkit.dependencies.resolve_dependencies`
-with ``exclude_builtins=True``), downloads x86_64 manylinux2014 wheels with
-``pip download``, and writes a ``.gluewheels.zip`` archive per AWS Glue 5.0+
-zip-of-wheels guidance.
+Downloads x86_64 manylinux2014 wheels with ``pip download`` (via ``uv run``)
+and zips them for Glue 5.0+ ``--additional-python-modules`` (zip-of-wheels).
 
-Public entry point: :func:`build_gluewheels_zip`. Always emits the zip file,
-including when there are zero non-built-in wheels to package.
+Typical flow: :func:`~aws_glue_toolkit.dependencies.resolve_dependencies`
+with ``exclude_builtins=True``, then :func:`build_gluewheels_zip`.
 
-Raises :class:`GlueWheelsBuildError` on wheel download or archive failures.
-Dependency conflicts are detected earlier in
-:mod:`aws_glue_toolkit.dependencies`.
+Always writes the zip, including when there are zero wheels to package.
+
+Raises :class:`GlueWheelsBuildError` on download or zip failures. Dependency
+conflicts are reported by :mod:`aws_glue_toolkit.dependencies` earlier.
+
+Note:
+    ``# nosec B404`` — reviewed ``subprocess`` import; used only in
+    :func:`_pip_download_wheels`.
 
 """
 
@@ -28,24 +30,23 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from aws_glue_toolkit.dependencies import ResolvedDependencies
-    from aws_glue_toolkit.pyproject import PyProject
 
 __all__ = [
     "GlueWheelsBuildError",
     "GlueWheelsBuildResult",
     "build_gluewheels_zip",
-    "glue_wheels_zip_name",
 ]
 
-# --- Types and naming ---
+# ``pip download --platform`` for Glue x86_64 workers (manylinux2014).
+_PIP_PLATFORM: Final[str] = "manylinux2014_x86_64"
 
 
 class GlueWheelsBuildError(Exception):
-    """Wheel download or zip packaging failed."""
+    """``pip download`` or zip creation failed."""
 
 
 class GlueWheelsBuildResult(NamedTuple):
-    """Output of :func:`build_gluewheels_zip`.
+    """Result of :func:`build_gluewheels_zip`.
 
     Attributes:
         output_path: Path to the ``.gluewheels.zip`` file.
@@ -57,28 +58,14 @@ class GlueWheelsBuildResult(NamedTuple):
     wheel_count: int
 
 
-def glue_wheels_zip_name(pyproject: PyProject) -> str:
-    """Return ``{name}-{version}.gluewheels.zip`` from ``[project]`` fields."""
-    name = pyproject.project.name or "glue-wheels"
-    version = pyproject.project.version or "0.0.0"
-    return f"{name}-{version}.gluewheels.zip"
-
-
-# --- Constants ---
-
-_PIP_PLATFORM: Final[str] = "manylinux2014_x86_64"
-
-
 def _pip_python_version_tag(python_version: str) -> str:
+    """Map ``"3.11"`` → ``"311"`` for ``pip download --python-version``."""
     return python_version.replace(".", "")
-
-
-# --- Private I/O ---
 
 
 @contextmanager
 def _wheels_workspace(requirements_txt: str) -> Iterator[Path]:
-    """Yield a ``wheels/`` directory containing ``requirements.txt``."""
+    """Yield a temp ``wheels/`` directory containing ``requirements.txt``."""
     with TemporaryDirectory() as tmp:
         wheels_dir = Path(tmp) / "wheels"
         wheels_dir.mkdir()
@@ -94,9 +81,8 @@ def _pip_download_wheels(
     *,
     uv_exe: str,
     python_version: str,
-    pip_platform: str,
 ) -> None:
-    """Download wheels into ``wheels_dir`` (includes ``requirements.txt``)."""
+    """Download wheels into ``wheels_dir`` using :data:`_PIP_PLATFORM`."""
     requirements_path = wheels_dir / "requirements.txt"
     cmd = [
         uv_exe,
@@ -113,7 +99,7 @@ def _pip_download_wheels(
         "--dest",
         str(wheels_dir),
         "--platform",
-        pip_platform,
+        _PIP_PLATFORM,
         "--python-version",
         _pip_python_version_tag(python_version),
         "--only-binary=:all:",
@@ -132,7 +118,7 @@ def _pip_download_wheels(
 
 
 def _create_gluewheels_zip(wheels_dir: Path, output_path: Path) -> int:
-    """Zip ``wheels/`` contents; return the number of wheel files included."""
+    """Zip the workspace tree; return the number of ``.whl`` files included."""
     root = wheels_dir.parent
     wheel_count = 0
     with ZipFile(output_path, "w", compression=ZIP_DEFLATED) as archive:
@@ -145,29 +131,26 @@ def _create_gluewheels_zip(wheels_dir: Path, output_path: Path) -> int:
     return wheel_count
 
 
-# --- Public build API ---
-
-
 def build_gluewheels_zip(
     resolved: ResolvedDependencies,
     output_path: Path,
     *,
     uv_exe: str,
 ) -> GlueWheelsBuildResult:
-    """Build a ``.gluewheels.zip`` artifact for AWS Glue 5.0+.
+    """Build a ``.gluewheels.zip`` at ``output_path``.
 
     Args:
-        resolved: Packageable dependencies from
+        resolved: Output of
             :func:`~aws_glue_toolkit.dependencies.resolve_dependencies`
-            (with ``exclude_builtins=True``).
-        output_path: Destination path for the zip file.
+            (typically with ``exclude_builtins=True``).
+        output_path: Destination zip path.
         uv_exe: Path to the ``uv`` executable.
 
     Returns:
-        Output path and wheel count (zero when every dependency is built-in).
+        Output path and wheel count (may be zero).
 
     Raises:
-        GlueWheelsBuildError: ``pip download`` or packaging failed.
+        GlueWheelsBuildError: Download or zip step failed.
 
     """
     requirements_txt = resolved.requirements_txt
@@ -178,7 +161,6 @@ def build_gluewheels_zip(
                 wheels_dir,
                 uv_exe=uv_exe,
                 python_version=resolved.python_version,
-                pip_platform=_PIP_PLATFORM,
             )
         wheel_count = _create_gluewheels_zip(wheels_dir, output_path)
 

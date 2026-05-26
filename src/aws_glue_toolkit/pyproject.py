@@ -1,43 +1,49 @@
-"""Glue job ``pyproject.toml`` schema, I/O, and validation.
+"""Job ``pyproject.toml``: TOML validation and :class:`GlueJobProject`.
 
-Owns the Pydantic models for a Glue job ``pyproject.toml`` and the functions
-that locate, read, and validate that file. Other modules consume a validated
-:class:`PyProject` from :func:`load_pyproject` rather than parsing TOML
-themselves.
+Pydantic models (:class:`PyProject`, etc.) mirror the file layout and validate
+input. :func:`load_pyproject` returns :class:`GlueJobProject` — the object
+other modules should use (resolved paths, defaults, and runtime metadata).
 
-Raises :class:`PyProjectError` subclasses on failure (missing file, unreadable
-path, invalid TOML, or schema validation). The CLI maps these to process exit
-codes.
+Raises :class:`PyProjectError` when the file is missing, unreadable, invalid
+TOML, or fails validation.
 
-Unknown keys are ignored. ``project.name`` / ``project.version`` default to
-``None``; ``project.dependencies`` to ``[]``. ``tool.aws_glue_toolkit`` is
-always set; missing ``glue_version`` defaults to ``5.1``. ``glue_version``
-must match a bundled release (see
-:data:`~aws_glue_toolkit.runtime.SUPPORTED_GLUE_VERSIONS`).
+Schema rules (unknown keys ignored):
 
-Example:
+- ``project.name`` — required
+- ``project.version`` — optional; defaults to :data:`DEFAULT_PACKAGE_VERSION`
+- ``project.dependencies`` — optional; defaults to ``[]``
+- ``tool.aws-glue-toolkit.glue_version`` — optional; defaults to ``"5.1"``;
+  must be in :data:`~aws_glue_toolkit.runtime.SUPPORTED_GLUE_VERSIONS`
+
+Example::
+
     from pathlib import Path
 
     from aws_glue_toolkit.pyproject import load_pyproject
 
-    project = load_pyproject(Path("./my-glue-job"))
+    job = load_pyproject(Path("./my-glue-job"))
 
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path  # noqa: TC003  # runtime paths in load/read API
 from tomllib import TOMLDecodeError, loads
-from typing import Literal
+from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from aws_glue_toolkit.runtime import (  # noqa: TC001
+from aws_glue_toolkit.runtime import (
     SUPPORTED_GLUE_VERSIONS,
+    GlueRuntimeMetadata,
+    load_glue_runtime_metadata,
 )
 
 __all__ = [
+    "DEFAULT_PACKAGE_VERSION",
     "AwsGlueToolkit",
+    "GlueJobProject",
     "InvalidPyProjectError",
     "InvalidTomlError",
     "MissingPyProjectError",
@@ -51,21 +57,61 @@ __all__ = [
     "read_pyproject_text",
 ]
 
-# --- Pydantic models ---
+DEFAULT_PACKAGE_VERSION: Final[str] = "0.0.0"
+
+# --- Resolved job config ---
+
+
+@dataclass(frozen=True, slots=True)
+class GlueJobProject:
+    """Resolved Glue job configuration passed to ``dependencies`` and ``cli``.
+
+    Built only by :func:`load_pyproject`. Fields are fully resolved (no
+    ``None`` for :attr:`version`).
+
+    Attributes:
+        project_dir: Directory containing ``pyproject.toml``.
+        name: ``[project].name``.
+        version: ``[project].version`` or :data:`DEFAULT_PACKAGE_VERSION`.
+        dependencies: ``[project].dependencies`` as an immutable tuple.
+        glue_version: ``[tool.aws-glue-toolkit].glue_version``.
+        runtime_metadata: Bundled pins for :attr:`glue_version`.
+
+    """
+
+    project_dir: Path
+    name: str
+    version: str
+    dependencies: tuple[str, ...]
+    glue_version: str
+    runtime_metadata: GlueRuntimeMetadata
+
+    @property
+    def glue_wheels_zip_name(self) -> str:
+        """File name ``{name}-{version}.gluewheels.zip``."""
+        return f"{self.name}-{self.version}.gluewheels.zip"
+
+    @property
+    def glue_wheels_zip_path(self) -> Path:
+        """Default artifact path under :attr:`project_dir`."""
+        return self.project_dir / self.glue_wheels_zip_name
+
+
+# --- Pydantic models (TOML schema; not passed to other modules) ---
 
 
 class Project(BaseModel):
-    """PEP 621 ``[project]`` fields used by the toolkit."""
+    """``[project]`` table (PEP 621 subset)."""
 
     model_config = ConfigDict(extra="ignore")
 
-    name: str | None = None
+    name: str
     version: str | None = None
     dependencies: list[str] = Field(default_factory=list)
 
 
 class AwsGlueToolkit(BaseModel):
-    """Settings under ``[tool.aws-glue-toolkit]``."""
+    """``[tool.aws-glue-toolkit]`` table."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -75,7 +121,7 @@ class AwsGlueToolkit(BaseModel):
 
 
 class Tool(BaseModel):
-    """PEP 518 ``[tool]`` table."""
+    """``[tool]`` table."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -86,11 +132,11 @@ class Tool(BaseModel):
 
 
 class PyProject(BaseModel):
-    """Validated root of a Glue job ``pyproject.toml``."""
+    """Root model for one ``pyproject.toml`` (validation only)."""
 
     model_config = ConfigDict(extra="ignore")
 
-    project: Project = Field(default_factory=Project)
+    project: Project
     tool: Tool = Field(default_factory=Tool)
 
 
@@ -98,35 +144,35 @@ class PyProject(BaseModel):
 
 
 class PyProjectError(Exception):
-    """Failed to read or validate ``pyproject.toml``."""
+    """Base error for reading or validating a job ``pyproject.toml``."""
 
 
 class MissingPyProjectError(PyProjectError):
-    """``pyproject.toml`` does not exist."""
+    """No ``pyproject.toml`` at the expected path."""
 
     def __init__(self, path: Path) -> None:
-        """Store the expected ``pyproject.toml`` path."""
+        """Record the path that was missing."""
         self.path = path
         super().__init__(f"no pyproject.toml at {path}")
 
 
 class PyProjectUnreadableError(PyProjectError):
-    """``pyproject.toml`` exists but cannot be read."""
+    """``pyproject.toml`` exists but could not be read."""
 
 
 class InvalidTomlError(PyProjectError):
-    """``pyproject.toml`` is not valid TOML."""
+    """File is not valid TOML."""
 
 
 class InvalidPyProjectError(PyProjectError):
-    """``pyproject.toml`` fails schema validation."""
+    """File fails Pydantic schema validation."""
 
 
-# --- Read, parse, and load API ---
+# --- Read, parse, and load ---
 
 
 def read_pyproject_text(project_dir: Path) -> str:
-    """Read ``project_dir/pyproject.toml`` as UTF-8 text.
+    """Read ``project_dir/pyproject.toml`` as UTF-8.
 
     Raises:
         MissingPyProjectError: File not found.
@@ -144,7 +190,9 @@ def read_pyproject_text(project_dir: Path) -> str:
 
 
 def parse_pyproject_text(text: str) -> PyProject:
-    """Parse TOML text into :class:`PyProject`.
+    """Parse and validate TOML text into :class:`PyProject`.
+
+    Does not load runtime metadata or build :class:`GlueJobProject`.
 
     Raises:
         InvalidTomlError: TOML syntax error.
@@ -161,14 +209,23 @@ def parse_pyproject_text(text: str) -> PyProject:
         raise InvalidPyProjectError(msg) from e
 
 
-def load_pyproject(project_dir: Path) -> PyProject:
-    """Read and validate ``project_dir/pyproject.toml``.
-
-    Returns:
-        Validated :class:`PyProject` safe for other modules to use.
+def load_pyproject(project_dir: Path) -> GlueJobProject:
+    """Load ``project_dir/pyproject.toml`` and return resolved job config.
 
     Raises:
         PyProjectError: Missing file, read error, or invalid contents.
 
     """
-    return parse_pyproject_text(read_pyproject_text(project_dir))
+    root = project_dir.resolve()
+
+    pyproject = parse_pyproject_text(read_pyproject_text(root))
+
+    glue_version = pyproject.tool.aws_glue_toolkit.glue_version
+    return GlueJobProject(
+        project_dir=root,
+        name=pyproject.project.name,
+        version=pyproject.project.version or DEFAULT_PACKAGE_VERSION,
+        dependencies=tuple(pyproject.project.dependencies),
+        glue_version=glue_version,
+        runtime_metadata=load_glue_runtime_metadata(glue_version),
+    )

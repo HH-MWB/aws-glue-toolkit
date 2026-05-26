@@ -1,19 +1,17 @@
-"""``gtk`` CLI entry point.
+"""``gtk`` — CLI for Glue job dependency check and wheel packaging.
 
-Registers Cyclopts commands and orchestrates the toolkit workflow:
+Commands:
 
-- :func:`check` — load a job ``pyproject.toml`` and verify dependencies resolve
-  against Glue runtime pins.
-- :func:`build` — resolve packageable dependencies and write a
-  ``.gluewheels.zip`` artifact.
+- ``check`` — resolve dependencies against bundled Glue runtime pins
+- ``build`` — write a ``.gluewheels.zip`` for extra Python libraries
 
-Translates domain errors from :mod:`aws_glue_toolkit.pyproject`,
-:mod:`aws_glue_toolkit.dependencies`, and :mod:`aws_glue_toolkit.wheels` into
-process exit codes and Rich console output. Does not implement resolution or
-packaging logic itself.
+Job commands use :func:`gtk_command`, which loads ``pyproject.toml`` into
+:class:`~aws_glue_toolkit.pyproject.GlueJobProject` and maps errors to exit
+codes. Commands that do not need a job directory (e.g. ``version``) register
+with :meth:`~cyclopts.App.command` on :data:`app` directly.
 
-Example:
-    gtk check
+Example::
+
     gtk check ./my-glue-job
     gtk build ./my-glue-job
 
@@ -22,10 +20,9 @@ Example:
 from __future__ import annotations
 
 from enum import IntEnum
-from functools import wraps
 from pathlib import Path
 from shutil import which
-from typing import TYPE_CHECKING, Final, ParamSpec, cast
+from typing import TYPE_CHECKING, Final, cast
 
 from cyclopts import App
 from pydantic.types import (
@@ -38,32 +35,26 @@ from aws_glue_toolkit.dependencies import (
     resolve_dependencies,
 )
 from aws_glue_toolkit.pyproject import (
+    GlueJobProject,
     InvalidPyProjectError,
     InvalidTomlError,
     MissingPyProjectError,
-    PyProject,
     PyProjectError,
     PyProjectUnreadableError,
     load_pyproject,
 )
-from aws_glue_toolkit.wheels import (
-    GlueWheelsBuildError,
-    build_gluewheels_zip,
-    glue_wheels_zip_name,
-)
+from aws_glue_toolkit.wheels import GlueWheelsBuildError, build_gluewheels_zip
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
 __all__ = ["app"]
 
-P = ParamSpec("P")
-
-# --- Exit codes and errors ---
+# --- Exit codes ---
 
 
 class GtkExitCode(IntEnum):
-    """Process exit codes for ``gtk`` commands."""
+    """Exit codes returned by ``gtk`` subcommands."""
 
     OK = 0
     DEPENDENCY_CONFLICT = 1
@@ -76,7 +67,7 @@ class GtkExitCode(IntEnum):
 
 
 class GlueToolkitError(Exception):
-    """Expected CLI failure with a user-facing message and exit code."""
+    """Expected failure; carries an exit code and user-facing message."""
 
     def __init__(self, exit_code: GtkExitCode, error_message: str) -> None:
         self.exit_code = int(exit_code)
@@ -84,30 +75,53 @@ class GlueToolkitError(Exception):
         super().__init__()
 
 
-# --- App and command decorator ---
+# --- App ---
 
 app = App(
     help="AWS Glue development lifecycle toolkit.",
     result_action="print_non_int_sys_exit",
 )
 
+_JOB_LOAD_EXIT: Final[dict[type[PyProjectError], GtkExitCode]] = {
+    MissingPyProjectError: GtkExitCode.MISSING_PYPROJECT,
+    PyProjectUnreadableError: GtkExitCode.PYPROJECT_UNREADABLE,
+    InvalidTomlError: GtkExitCode.INVALID_TOML,
+    InvalidPyProjectError: GtkExitCode.INVALID_PYPROJECT,
+}
 
-def gtk_command(fn: Callable[P, int]) -> Callable[P, int]:
-    """Register on :data:`app` with :class:`GlueToolkitError` handling."""
 
-    @wraps(fn)
-    def wrapper(*args: P.args, **kwargs: P.kwargs) -> int:
+def gtk_command(
+    fn: Callable[[GlueJobProject], int],
+) -> Callable[[DirectoryPath], int]:
+    """Register ``fn`` as a Cyclopts command with one ``job_dir`` argument.
+
+    Loads :func:`~aws_glue_toolkit.pyproject.load_pyproject`, passes the
+    resulting :class:`~aws_glue_toolkit.pyproject.GlueJobProject` to ``fn``,
+    and maps load failures and :class:`GlueToolkitError` to exit codes.
+
+    Copies ``__name__`` and ``__doc__`` from the inner function only (not
+    ``functools.wraps``), so Cyclopts does not expose inner parameters
+    (such as ``--job.name``) on the CLI.
+    """
+
+    def wrapper(job_dir: DirectoryPath = Path()) -> int:
         try:
-            return fn(*args, **kwargs)
+            return fn(load_pyproject(job_dir.resolve()))
+        except PyProjectError as e:
+            app.error_console.print(str(e))
+            return _JOB_LOAD_EXIT[type(e)]
         except GlueToolkitError as exc:
             app.error_console.print(exc.error_message)
             return exc.exit_code
 
-    return cast("Callable[P, int]", app.command(wrapper))
+    wrapper.__name__ = fn.__name__
+    wrapper.__doc__ = fn.__doc__
+
+    return cast("Callable[[DirectoryPath], int]", app.command(wrapper))
 
 
 def get_uv_executable() -> str:
-    """Locate the ``uv`` executable on ``PATH``.
+    """Return the ``uv`` executable on ``PATH``.
 
     Raises:
         GlueToolkitError: Not found (:attr:`GtkExitCode.UV_NOT_FOUND`).
@@ -122,28 +136,8 @@ def get_uv_executable() -> str:
     return uv
 
 
-# --- Tooling helpers ---
-
-_PYPROJECT_EXIT: Final[dict[type[PyProjectError], GtkExitCode]] = {
-    MissingPyProjectError: GtkExitCode.MISSING_PYPROJECT,
-    PyProjectUnreadableError: GtkExitCode.PYPROJECT_UNREADABLE,
-    InvalidTomlError: GtkExitCode.INVALID_TOML,
-    InvalidPyProjectError: GtkExitCode.INVALID_PYPROJECT,
-}
-
-
-def _load_pyproject(project_dir: Path) -> PyProject:
-    try:
-        return load_pyproject(project_dir)
-    except PyProjectError as e:
-        exit_code = _PYPROJECT_EXIT.get(type(e), GtkExitCode.INVALID_PYPROJECT)
-        raise GlueToolkitError(exit_code, str(e)) from e
-
-
-# --- UI helpers ---
-
-
 def _print_dependency_conflict() -> int:
+    """Print conflict panel; return dependency-conflict exit code."""
     app.error_console.print(
         Panel(
             "Requirements are unsatisfiable with bundled Glue pins.",
@@ -154,17 +148,39 @@ def _print_dependency_conflict() -> int:
     return GtkExitCode.DEPENDENCY_CONFLICT
 
 
-def _run_build(pyproject: PyProject, output_path: Path) -> int:
+# --- Commands ---
+
+
+@gtk_command
+def check(job: GlueJobProject) -> int:
+    """Verify dependencies resolve for the job's Glue version."""
+    try:
+        resolve_dependencies(job, uv_exe=get_uv_executable())
+    except DependencyConflictError:
+        return _print_dependency_conflict()
+    app.console.print(
+        Panel(
+            "Dependencies resolve against Glue runtime pins.",
+            title="[bold green]No conflicts[/]",
+            border_style="green",
+        ),
+    )
+    return GtkExitCode.OK
+
+
+@gtk_command
+def build(job: GlueJobProject) -> int:
+    """Build ``{name}-{version}.gluewheels.zip`` under the job directory."""
     try:
         uv_exe = get_uv_executable()
         resolved = resolve_dependencies(
-            pyproject,
+            job,
             uv_exe=uv_exe,
             exclude_builtins=True,
         )
         result = build_gluewheels_zip(
             resolved,
-            output_path,
+            job.glue_wheels_zip_path,
             uv_exe=uv_exe,
         )
     except DependencyConflictError:
@@ -182,32 +198,3 @@ def _run_build(pyproject: PyProject, output_path: Path) -> int:
         ),
     )
     return GtkExitCode.OK
-
-
-# --- Commands ---
-
-
-@gtk_command
-def check(project_dir: DirectoryPath = Path()) -> int:
-    """Check job dependencies against bundled Glue runtime pins."""
-    pyproject = _load_pyproject(project_dir.resolve())
-    try:
-        resolve_dependencies(pyproject, uv_exe=get_uv_executable())
-    except DependencyConflictError:
-        return _print_dependency_conflict()
-    app.console.print(
-        Panel(
-            "Dependencies resolve against Glue runtime pins.",
-            title="[bold green]No conflicts[/]",
-            border_style="green",
-        ),
-    )
-    return GtkExitCode.OK
-
-
-@gtk_command
-def build(project_dir: DirectoryPath = Path()) -> int:
-    """Build a ``.gluewheels.zip`` artifact from ``pyproject.toml``."""
-    root = project_dir.resolve()
-    pyproject = _load_pyproject(root)
-    return _run_build(pyproject, root / glue_wheels_zip_name(pyproject))

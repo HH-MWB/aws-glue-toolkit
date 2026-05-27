@@ -5,10 +5,13 @@ Commands:
 - ``check`` — resolve dependencies against bundled Glue runtime pins
 - ``build`` — write a ``.gluewheels.zip`` for extra Python libraries
 
-Job commands use :func:`gtk_command`, which loads ``pyproject.toml`` into
-:class:`~aws_glue_toolkit.pyproject.GlueJobProject` and maps errors to exit
-codes. Commands that do not need a job directory (e.g. ``version``) register
-with :meth:`~cyclopts.App.command` on :data:`app` directly.
+Job commands are registered with :func:`gtk_command`. That decorator loads
+``pyproject.toml`` into :class:`~aws_glue_toolkit.pyproject.GlueJobProject`,
+runs the command body, and on failure looks up
+:data:`_GTK_EXCEPTION_HANDLERS` to print a Rich panel (or plain text for
+unexpected errors) on :attr:`~cyclopts.App.error_console` and return a
+:class:`GtkExitCode`. Commands that do not take a job directory register on
+:data:`app` with :meth:`~cyclopts.App.command` directly.
 
 Example::
 
@@ -39,7 +42,6 @@ from aws_glue_toolkit.pyproject import (
     InvalidPyProjectError,
     InvalidTomlError,
     MissingPyProjectError,
-    PyProjectError,
     PyProjectUnreadableError,
     load_pyproject,
 )
@@ -54,7 +56,11 @@ __all__ = ["app"]
 
 
 class GtkExitCode(IntEnum):
-    """Exit codes returned by ``gtk`` subcommands."""
+    """Process exit codes returned by ``gtk`` subcommands.
+
+    Members ``OK`` and ``UNEXPECTED`` are used outside
+    :data:`_GTK_EXCEPTION_HANDLERS`. The rest pair with known failure types.
+    """
 
     OK = 0
     DEPENDENCY_CONFLICT = 1
@@ -64,15 +70,11 @@ class GtkExitCode(IntEnum):
     INVALID_PYPROJECT = 5
     UV_NOT_FOUND = 6
     BUILD_FAILED = 7
+    UNEXPECTED = 8
 
 
-class GlueToolkitError(Exception):
-    """Expected failure; carries an exit code and user-facing message."""
-
-    def __init__(self, exit_code: GtkExitCode, error_message: str) -> None:
-        self.exit_code = int(exit_code)
-        self.error_message = error_message
-        super().__init__()
+class UvNotFoundError(Exception):
+    """``uv`` executable not found on ``PATH``."""
 
 
 # --- App ---
@@ -82,12 +84,83 @@ app = App(
     result_action="print_non_int_sys_exit",
 )
 
-_JOB_LOAD_EXIT: Final[dict[type[PyProjectError], GtkExitCode]] = {
-    MissingPyProjectError: GtkExitCode.MISSING_PYPROJECT,
-    PyProjectUnreadableError: GtkExitCode.PYPROJECT_UNREADABLE,
-    InvalidTomlError: GtkExitCode.INVALID_TOML,
-    InvalidPyProjectError: GtkExitCode.INVALID_PYPROJECT,
+# --- Exception handling ---
+
+# Maps exception type → (exit code, error panel for app.error_console).
+_GTK_EXCEPTION_HANDLERS: Final[
+    dict[type[Exception], tuple[GtkExitCode, Panel]]
+] = {
+    MissingPyProjectError: (
+        GtkExitCode.MISSING_PYPROJECT,
+        Panel(
+            "No pyproject.toml in the job directory.",
+            title="[bold red]Missing pyproject.toml[/]",
+            border_style="red",
+        ),
+    ),
+    PyProjectUnreadableError: (
+        GtkExitCode.PYPROJECT_UNREADABLE,
+        Panel(
+            "Could not read pyproject.toml.",
+            title="[bold red]Cannot read pyproject.toml[/]",
+            border_style="red",
+        ),
+    ),
+    InvalidTomlError: (
+        GtkExitCode.INVALID_TOML,
+        Panel(
+            "pyproject.toml is not valid TOML.",
+            title="[bold red]Invalid TOML[/]",
+            border_style="red",
+        ),
+    ),
+    InvalidPyProjectError: (
+        GtkExitCode.INVALID_PYPROJECT,
+        Panel(
+            "pyproject.toml does not match the Glue job schema.",
+            title="[bold red]Invalid pyproject.toml[/]",
+            border_style="red",
+        ),
+    ),
+    DependencyConflictError: (
+        GtkExitCode.DEPENDENCY_CONFLICT,
+        Panel(
+            "Requirements are unsatisfiable with bundled Glue pins.",
+            title="[bold red]Conflicts detected[/]",
+            border_style="red",
+        ),
+    ),
+    GlueWheelsBuildError: (
+        GtkExitCode.BUILD_FAILED,
+        Panel(
+            "Building .gluewheels.zip failed.",
+            title="[bold red]Build failed[/]",
+            border_style="red",
+        ),
+    ),
+    UvNotFoundError: (
+        GtkExitCode.UV_NOT_FOUND,
+        Panel(
+            "uv executable not found; install uv or ensure it is on PATH",
+            title="[bold red]uv not found[/]",
+            border_style="red",
+        ),
+    ),
 }
+
+
+def _lookup_handler(exc: Exception) -> tuple[GtkExitCode, str | Panel]:
+    """Map ``exc`` to an exit code and printable error output.
+
+    Walks ``type(exc).__mro__`` for the first key in
+    :data:`_GTK_EXCEPTION_HANDLERS`. Unregistered exceptions use
+    :attr:`GtkExitCode.UNEXPECTED` and a ``[ExceptionName] …`` string (not a
+    panel).
+    """
+    for exc_type in type(exc).__mro__:
+        if exc_type in _GTK_EXCEPTION_HANDLERS:
+            return _GTK_EXCEPTION_HANDLERS[exc_type]
+    return GtkExitCode.UNEXPECTED, f"[{type(exc).__name__}] {exc}"
 
 
 def gtk_command(
@@ -97,7 +170,9 @@ def gtk_command(
 
     Loads :func:`~aws_glue_toolkit.pyproject.load_pyproject`, passes the
     resulting :class:`~aws_glue_toolkit.pyproject.GlueJobProject` to ``fn``,
-    and maps load failures and :class:`GlueToolkitError` to exit codes.
+    and expects an :class:`GtkExitCode` return value. Any other
+    :exc:`Exception` is handled by :func:`_lookup_handler` (print + non-zero
+    exit code).
 
     Copies ``__name__`` and ``__doc__`` from the inner function only (not
     ``functools.wraps``), so Cyclopts does not expose inner parameters
@@ -107,12 +182,10 @@ def gtk_command(
     def wrapper(job_dir: DirectoryPath = Path()) -> int:
         try:
             return fn(load_pyproject(job_dir.resolve()))
-        except PyProjectError as e:
-            app.error_console.print(str(e))
-            return _JOB_LOAD_EXIT[type(e)]
-        except GlueToolkitError as exc:
-            app.error_console.print(exc.error_message)
-            return exc.exit_code
+        except Exception as exc:  # noqa: BLE001  # CLI shell; see _lookup_handler  # pylint: disable=broad-exception-caught
+            exit_code, message = _lookup_handler(exc)
+            app.error_console.print(message)
+            return exit_code
 
     wrapper.__name__ = fn.__name__
     wrapper.__doc__ = fn.__doc__
@@ -124,28 +197,13 @@ def get_uv_executable() -> str:
     """Return the ``uv`` executable on ``PATH``.
 
     Raises:
-        GlueToolkitError: Not found (:attr:`GtkExitCode.UV_NOT_FOUND`).
+        UvNotFoundError: Not found (:attr:`GtkExitCode.UV_NOT_FOUND`).
 
     """
     uv = which("uv")
     if not uv:
-        raise GlueToolkitError(
-            GtkExitCode.UV_NOT_FOUND,
-            "uv executable not found; install uv or ensure it is on PATH",
-        )
+        raise UvNotFoundError
     return uv
-
-
-def _print_dependency_conflict() -> int:
-    """Print conflict panel; return dependency-conflict exit code."""
-    app.error_console.print(
-        Panel(
-            "Requirements are unsatisfiable with bundled Glue pins.",
-            title="[bold red]Conflicts detected[/]",
-            border_style="red",
-        ),
-    )
-    return GtkExitCode.DEPENDENCY_CONFLICT
 
 
 # --- Commands ---
@@ -153,11 +211,12 @@ def _print_dependency_conflict() -> int:
 
 @gtk_command
 def check(job: GlueJobProject) -> int:
-    """Verify dependencies resolve for the job's Glue version."""
-    try:
-        resolve_dependencies(job, uv_exe=get_uv_executable())
-    except DependencyConflictError:
-        return _print_dependency_conflict()
+    """Verify dependencies resolve for the job's Glue version.
+
+    Runs :func:`~aws_glue_toolkit.dependencies.resolve_dependencies` only to
+    confirm satisfiability; the pinned result is not used (see ``build``).
+    """
+    _ = resolve_dependencies(job, uv_exe=get_uv_executable())
     app.console.print(
         Panel(
             "Dependencies resolve against Glue runtime pins.",
@@ -170,26 +229,22 @@ def check(job: GlueJobProject) -> int:
 
 @gtk_command
 def build(job: GlueJobProject) -> int:
-    """Build ``{name}-{version}.gluewheels.zip`` under the job directory."""
-    try:
-        uv_exe = get_uv_executable()
-        resolved = resolve_dependencies(
-            job,
-            uv_exe=uv_exe,
-            exclude_builtins=True,
-        )
-        result = build_gluewheels_zip(
-            resolved,
-            job.glue_wheels_zip_path,
-            uv_exe=uv_exe,
-        )
-    except DependencyConflictError:
-        return _print_dependency_conflict()
-    except GlueWheelsBuildError as e:
-        raise GlueToolkitError(
-            GtkExitCode.BUILD_FAILED,
-            str(e),
-        ) from e
+    """Build ``{name}-{version}.gluewheels.zip`` under the job directory.
+
+    Resolves dependencies (excluding Glue built-ins), downloads wheels, and
+    writes the job's ``.gluewheels.zip`` path from the loaded project.
+    """
+    uv_exe = get_uv_executable()
+    resolved = resolve_dependencies(
+        job,
+        uv_exe=uv_exe,
+        exclude_builtins=True,
+    )
+    result = build_gluewheels_zip(
+        resolved,
+        job.glue_wheels_zip_path,
+        uv_exe=uv_exe,
+    )
     app.console.print(
         Panel(
             f"Wrote {result.output_path} ({result.wheel_count} wheels).",

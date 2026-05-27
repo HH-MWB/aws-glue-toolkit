@@ -24,7 +24,6 @@ from __future__ import annotations
 
 from enum import IntEnum
 from pathlib import Path
-from shutil import which
 from typing import TYPE_CHECKING, Final, cast
 
 from cyclopts import App
@@ -45,6 +44,7 @@ from aws_glue_toolkit.pyproject import (
     PyProjectUnreadableError,
     load_pyproject,
 )
+from aws_glue_toolkit.uv import UvNotFoundError
 from aws_glue_toolkit.wheels import GlueWheelsBuildError, build_gluewheels_zip
 
 if TYPE_CHECKING:
@@ -71,10 +71,6 @@ class GtkExitCode(IntEnum):
     UV_NOT_FOUND = 6
     BUILD_FAILED = 7
     UNEXPECTED = 8
-
-
-class UvNotFoundError(Exception):
-    """``uv`` executable not found on ``PATH``."""
 
 
 # --- App ---
@@ -193,19 +189,6 @@ def gtk_command(
     return cast("Callable[[DirectoryPath], int]", app.command(wrapper))
 
 
-def get_uv_executable() -> str:
-    """Return the ``uv`` executable on ``PATH``.
-
-    Raises:
-        UvNotFoundError: Not found (:attr:`GtkExitCode.UV_NOT_FOUND`).
-
-    """
-    uv = which("uv")
-    if not uv:
-        raise UvNotFoundError
-    return uv
-
-
 # --- Commands ---
 
 
@@ -216,7 +199,7 @@ def check(job: GlueJobProject) -> int:
     Runs :func:`~aws_glue_toolkit.dependencies.resolve_dependencies` only to
     confirm satisfiability; the pinned result is not used (see ``build``).
     """
-    _ = resolve_dependencies(job, uv_exe=get_uv_executable())
+    _ = resolve_dependencies(job)
     app.console.print(
         Panel(
             "Dependencies resolve against Glue runtime pins.",
@@ -234,17 +217,8 @@ def build(job: GlueJobProject) -> int:
     Resolves dependencies (excluding Glue built-ins), downloads wheels, and
     writes the job's ``.gluewheels.zip`` path from the loaded project.
     """
-    uv_exe = get_uv_executable()
-    resolved = resolve_dependencies(
-        job,
-        uv_exe=uv_exe,
-        exclude_builtins=True,
-    )
-    result = build_gluewheels_zip(
-        resolved,
-        job.glue_wheels_zip_path,
-        uv_exe=uv_exe,
-    )
+    resolved = resolve_dependencies(job, exclude_builtins=True)
+    result = build_gluewheels_zip(resolved, job.glue_wheels_zip_path)
     app.console.print(
         Panel(
             f"Wrote {result.output_path} ({result.wheel_count} wheels).",

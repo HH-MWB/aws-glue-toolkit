@@ -1,7 +1,7 @@
 """Build AWS Glue ``.gluewheels.zip`` wheel archives.
 
-Downloads x86_64 manylinux2014 wheels with ``pip download`` (via ``uv run``)
-and zips them for Glue 5.0+ ``--additional-python-modules`` (zip-of-wheels).
+Downloads x86_64 manylinux2014 wheels with ``uv pip download`` and zips them
+for Glue 5.0+ ``--additional-python-modules`` (zip-of-wheels).
 
 Typical flow: :func:`~aws_glue_toolkit.dependencies.resolve_dependencies`
 with ``exclude_builtins=True``, then :func:`build_gluewheels_zip`.
@@ -11,20 +11,18 @@ Always writes the zip, including when there are zero wheels to package.
 Raises :class:`GlueWheelsBuildError` on download or zip failures. Dependency
 conflicts are reported by :mod:`aws_glue_toolkit.dependencies` earlier.
 
-Note:
-    ``# nosec B404`` — reviewed ``subprocess`` import; used only in
-    :func:`_pip_download_wheels`.
-
 """
 
 from __future__ import annotations
 
 from contextlib import contextmanager
 from pathlib import Path
-from subprocess import CalledProcessError, run  # nosec B404
+from subprocess import CalledProcessError  # nosec B404
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Final, NamedTuple
 from zipfile import ZIP_DEFLATED, ZipFile
+
+from aws_glue_toolkit.uv import uv
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -58,11 +56,6 @@ class GlueWheelsBuildResult(NamedTuple):
     wheel_count: int
 
 
-def _pip_python_version_tag(python_version: str) -> str:
-    """Map ``"3.11"`` → ``"311"`` for ``pip download --python-version``."""
-    return python_version.replace(".", "")
-
-
 @contextmanager
 def _wheels_workspace(requirements_txt: str) -> Iterator[Path]:
     """Yield a temp ``wheels/`` directory containing ``requirements.txt``."""
@@ -76,42 +69,25 @@ def _wheels_workspace(requirements_txt: str) -> Iterator[Path]:
         yield wheels_dir
 
 
-def _pip_download_wheels(
-    wheels_dir: Path,
-    *,
-    uv_exe: str,
-    python_version: str,
-) -> None:
+def _pip_download_wheels(wheels_dir: Path, *, python_version: str) -> None:
     """Download wheels into ``wheels_dir`` using :data:`_PIP_PLATFORM`."""
     requirements_path = wheels_dir / "requirements.txt"
-    cmd = [
-        uv_exe,
-        "run",
-        "--no-project",
-        "--with",
-        "pip",
-        "python",
-        "-m",
-        "pip",
-        "download",
-        "-r",
-        str(requirements_path),
-        "--dest",
-        str(wheels_dir),
-        "--platform",
-        _PIP_PLATFORM,
-        "--python-version",
-        _pip_python_version_tag(python_version),
-        "--only-binary=:all:",
-    ]
-    try:  # pylint: disable=duplicate-code
-        run(  # noqa: S603
-            cmd,
-            check=True,
-            capture_output=True,
-            text=True,
-            shell=False,
-        )  # nosec B603
+    try:
+        uv(
+            [
+                "pip",
+                "download",
+                "-r",
+                str(requirements_path),
+                "--dest",
+                str(wheels_dir),
+                "--platform",
+                _PIP_PLATFORM,
+                "--python-version",
+                python_version.replace(".", ""),
+                "--only-binary=:all:",
+            ],
+        )
     except CalledProcessError as e:
         msg = (e.stderr or e.stdout).strip()
         raise GlueWheelsBuildError(msg) from None
@@ -134,8 +110,6 @@ def _create_gluewheels_zip(wheels_dir: Path, output_path: Path) -> int:
 def build_gluewheels_zip(
     resolved: ResolvedDependencies,
     output_path: Path,
-    *,
-    uv_exe: str,
 ) -> GlueWheelsBuildResult:
     """Build a ``.gluewheels.zip`` at ``output_path``.
 
@@ -144,7 +118,6 @@ def build_gluewheels_zip(
             :func:`~aws_glue_toolkit.dependencies.resolve_dependencies`
             (typically with ``exclude_builtins=True``).
         output_path: Destination zip path.
-        uv_exe: Path to the ``uv`` executable.
 
     Returns:
         Output path and wheel count (may be zero).
@@ -159,7 +132,6 @@ def build_gluewheels_zip(
         if requirements_txt.strip():
             _pip_download_wheels(
                 wheels_dir,
-                uv_exe=uv_exe,
                 python_version=resolved.python_version,
             )
         wheel_count = _create_gluewheels_zip(wheels_dir, output_path)

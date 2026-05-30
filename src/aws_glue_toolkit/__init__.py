@@ -6,7 +6,7 @@ Modules:
   returns :class:`~aws_glue_toolkit.pyproject.GlueJobProject`
 - :mod:`aws_glue_toolkit.runtime` — bundled per-version Glue runtime pins
 - :mod:`aws_glue_toolkit.dependencies` — resolve dependencies with ``uv pip``
-- :mod:`aws_glue_toolkit.uv` — ``uv pip`` subprocess helper
+- :mod:`aws_glue_toolkit.uv` — ``uv`` subprocess helper and errors
 - :mod:`aws_glue_toolkit.wheels` — build ``.gluewheels.zip`` artifacts
 - :mod:`aws_glue_toolkit.cli` — ``gtk`` CLI
 

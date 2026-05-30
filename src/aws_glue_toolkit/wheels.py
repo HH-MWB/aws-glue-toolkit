@@ -3,13 +3,16 @@
 Downloads x86_64 manylinux2014 wheels with ``uv pip download`` and zips them
 for Glue 5.0+ ``--additional-python-modules`` (zip-of-wheels).
 
+Public API: :func:`build_gluewheels_zip` → :class:`GlueWheelsBuildResult`.
+
 Typical flow: :func:`~aws_glue_toolkit.dependencies.resolve_dependencies`
 with ``exclude_builtins=True``, then :func:`build_gluewheels_zip`.
 
 Always writes the zip, including when there are zero wheels to package.
 
-Raises :class:`GlueWheelsBuildError` on download or zip failures. Dependency
+Raises :class:`GlueWheelsBuildError` on download failure. Dependency
 conflicts are reported by :mod:`aws_glue_toolkit.dependencies` earlier.
+Requires ``uv`` on ``PATH`` (see :mod:`aws_glue_toolkit.uv`).
 
 """
 
@@ -17,12 +20,11 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from pathlib import Path
-from subprocess import CalledProcessError  # nosec B404
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Final, NamedTuple
 from zipfile import ZIP_DEFLATED, ZipFile
 
-from aws_glue_toolkit.uv import uv
+from aws_glue_toolkit.uv import UvCommandError, uv
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -40,7 +42,11 @@ _PIP_PLATFORM: Final[str] = "manylinux2014_x86_64"
 
 
 class GlueWheelsBuildError(Exception):
-    """``pip download`` or zip creation failed."""
+    """``uv pip download`` or zip creation failed.
+
+    Download failures wrap :exc:`~aws_glue_toolkit.uv.UvCommandError` with a
+    domain-specific type for callers and the CLI.
+    """
 
 
 class GlueWheelsBuildResult(NamedTuple):
@@ -70,7 +76,12 @@ def _wheels_workspace(requirements_txt: str) -> Iterator[Path]:
 
 
 def _pip_download_wheels(wheels_dir: Path, *, python_version: str) -> None:
-    """Download wheels into ``wheels_dir`` using :data:`_PIP_PLATFORM`."""
+    """Download wheels into ``wheels_dir`` using :data:`_PIP_PLATFORM`.
+
+    Raises:
+        GlueWheelsBuildError: ``uv pip download`` failed.
+
+    """
     requirements_path = wheels_dir / "requirements.txt"
     try:
         uv(
@@ -88,9 +99,8 @@ def _pip_download_wheels(wheels_dir: Path, *, python_version: str) -> None:
                 "--only-binary=:all:",
             ],
         )
-    except CalledProcessError as e:
-        msg = (e.stderr or e.stdout).strip()
-        raise GlueWheelsBuildError(msg) from None
+    except UvCommandError as e:
+        raise GlueWheelsBuildError(str(e)) from e
 
 
 def _create_gluewheels_zip(wheels_dir: Path, output_path: Path) -> int:
@@ -124,6 +134,7 @@ def build_gluewheels_zip(
 
     Raises:
         GlueWheelsBuildError: Download or zip step failed.
+        UvNotFoundError: Propagated when ``uv`` is not on ``PATH``.
 
     """
     requirements_txt = resolved.requirements_txt

@@ -9,7 +9,9 @@ Public API: :func:`resolve_dependencies` → :class:`ResolvedDependencies`.
 For wheel builds, pass ``exclude_builtins=True`` to drop packages already
 installed in the Glue runtime at the same pinned version.
 
-Raises :class:`DependencyConflictError` when requirements cannot be satisfied.
+Raises :class:`DependencyConflictError` when ``uv pip compile`` cannot
+satisfy requirements. Requires ``uv`` on ``PATH`` (see
+:mod:`aws_glue_toolkit.uv`).
 
 Resolution targets x86_64 manylinux2014 (``uv pip compile --python-platform``).
 
@@ -20,11 +22,10 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from subprocess import CalledProcessError  # nosec B404
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Final, NamedTuple
 
-from aws_glue_toolkit.uv import uv
+from aws_glue_toolkit.uv import UvCommandError, uv
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
@@ -42,7 +43,11 @@ _UV_PYTHON_PLATFORM: Final[str] = "x86_64-manylinux2014"
 
 
 class DependencyConflictError(Exception):
-    """``uv pip compile`` could not satisfy requirements with Glue pins."""
+    """``uv pip compile`` could not satisfy requirements with Glue pins.
+
+    Wraps :exc:`~aws_glue_toolkit.uv.UvCommandError` with a domain-specific
+    type for callers and the CLI.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,7 +131,12 @@ def _pip_compile(
     *,
     python_version: str,
 ) -> None:
-    """Run ``uv pip compile``; write ``requirements.txt`` to the workspace."""
+    """Run ``uv pip compile``; write ``requirements.txt`` to the workspace.
+
+    Raises:
+        DependencyConflictError: ``uv pip compile`` failed.
+
+    """
     try:
         uv(
             [
@@ -145,9 +155,8 @@ def _pip_compile(
                 str(workspace.requirements_txt_path),
             ],
         )
-    except CalledProcessError as e:
-        msg = (e.stderr or e.stdout).strip()
-        raise DependencyConflictError(msg) from None
+    except UvCommandError as e:
+        raise DependencyConflictError(str(e)) from e
 
 
 def _compile_requirements_txt(job: GlueJobProject) -> tuple[str, str]:
@@ -182,6 +191,7 @@ def resolve_dependencies(
 
     Raises:
         DependencyConflictError: Requirements are unsatisfiable.
+        UvNotFoundError: Propagated when ``uv`` is not on ``PATH``.
 
     """
     metadata = job.runtime_metadata

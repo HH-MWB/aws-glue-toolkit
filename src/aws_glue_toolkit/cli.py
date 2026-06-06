@@ -218,10 +218,14 @@ def build(job: GlueJobProject) -> int:
     wheels for the runtime platform, and writes the job's default artifact
     path.
     """
-    result = build_gluewheels_zip(job)
+    build_gluewheels_zip(
+        job.dependencies,
+        job.glue_version,
+        job.glue_wheels_zip_path,
+    )
     app.console.print(
         Panel(
-            f"Wrote {result.output_path} ({result.wheel_count} wheels).",
+            f"Wrote {job.glue_wheels_zip_path}.",
             title="[bold green]Build complete[/]",
             border_style="green",
         ),

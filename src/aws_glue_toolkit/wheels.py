@@ -1,14 +1,25 @@
 """Build AWS Glue ``.gluewheels.zip`` wheel archives.
 
-Resolves dependencies via :mod:`aws_glue_toolkit.pip`, omits packages already
-on the Glue image at the same pinned version, downloads wheels for the
-runtime ``pip_platform``, and zips them for Glue 5.0+
-``--additional-python-modules``.
+For Glue 5.0+ ``--additional-python-modules``, packages extra Python libraries
+into a zip artifact per `AWS Glue Appendix A
+<https://docs.aws.amazon.com/glue/latest/dg/aws-glue-programming-python-libraries.html>`_:
 
-Public API: :func:`build_gluewheels_zip`, :class:`GlueWheelsBuildResult`,
-:exc:`GlueWheelsBuildError`.
+::
 
-Always writes the zip, including when there are zero wheels to package.
+    wheels/
+      requirements.txt   # resolved ``name==version`` pins
+      *.whl
+
+Pipeline:
+
+1. Load runtime metadata for ``glue_version`` (constraints, Python, platform).
+2. Resolve requirements and omit Glue built-ins at the same pinned version.
+3. Stage ``wheels/``, write ``requirements.txt``, download wheels.
+4. Zip the staging tree to ``destination``.
+
+Public API: :func:`build_gluewheels_zip`, :exc:`GlueWheelsBuildError`.
+
+Always writes ``destination``, including when there are zero wheels to bundle.
 
 """
 
@@ -17,125 +28,179 @@ from __future__ import annotations
 from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from aws_glue_toolkit.pip import PipError, download_wheels, resolve_packages
+from aws_glue_toolkit.runtime import load_glue_runtime_metadata
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
-
-    from aws_glue_toolkit.job import GlueJobProject
+    from collections.abc import Iterator, Mapping, Sequence
 
 __all__ = [
     "GlueWheelsBuildError",
-    "GlueWheelsBuildResult",
     "build_gluewheels_zip",
 ]
 
 
+# --- Errors ---
+
+
 class GlueWheelsBuildError(Exception):
-    """Resolution, download, or zip step failed.
+    """Building a ``.gluewheels.zip`` failed.
 
     Resolution and download failures from :mod:`aws_glue_toolkit.pip` wrap
     :exc:`~aws_glue_toolkit.pip.PipError` for callers and the CLI.
     """
 
 
-class GlueWheelsBuildResult(NamedTuple):
-    """Result of :func:`build_gluewheels_zip`.
+# --- Resolution ---
 
-    Attributes:
-        output_path: Path to the ``.gluewheels.zip`` file.
-        wheel_count: Number of ``.whl`` files in the archive.
+
+def _resolve_packages_to_bundle(
+    requirements: Sequence[str],
+    runtime_package_pins: Mapping[str, str],
+    *,
+    python_version: str,
+    platform: str,
+) -> dict[str, str]:
+    """Resolve requirements and return packages to download into the archive.
+
+    Uses :func:`~aws_glue_toolkit.pip.resolve_packages`, then drops packages
+    whose resolved version matches a Glue built-in pin (constraints limit
+    versions during resolution but do not remove packages from the report).
+
+    Args:
+        requirements: Direct dependency requirements (PEP 508 strings).
+        runtime_package_pins: Bundled Glue runtime pins used as ``pip``
+            constraints and for built-in filtering.
+        python_version: Target Python (e.g. ``"3.11"``).
+        platform: ``pip --platform`` tag for Glue workers.
+
+    Returns:
+        Package name → version pins to bundle.
+
+    Raises:
+        GlueWheelsBuildError: ``pip`` resolution failed.
 
     """
-
-    output_path: Path
-    wheel_count: int
-
-
-def _packages_for_job(job: GlueJobProject) -> dict[str, str]:
-    """Resolve job deps and return non-built-in packages."""
-    if not job.dependencies:
-        return {}
     try:
-        packages = resolve_packages(
-            job.dependencies,
-            job.runtime_metadata.python_packages,
-            python_version=job.runtime_metadata.core_engines.python,
-            platform=job.runtime_metadata.pip_platform,
+        resolved = resolve_packages(
+            requirements,
+            runtime_package_pins,
+            python_version=python_version,
+            platform=platform,
         )
     except PipError as exc:
         raise GlueWheelsBuildError(str(exc)) from exc
-    runtime = job.runtime_metadata.python_packages
     return {
         name: version
-        for name, version in packages.items()
-        if runtime.get(name) != version
+        for name, version in resolved.items()
+        if runtime_package_pins.get(name) != version
     }
 
 
-# --- I/O shell ---
+# --- I/O ---
 
 
 @contextmanager
-def _wheels_workspace() -> Iterator[Path]:
-    """Yield a temp ``wheels/`` directory."""
-    with TemporaryDirectory() as tmp:
-        wheels_dir = Path(tmp) / "wheels"
-        wheels_dir.mkdir()
-        yield wheels_dir
+def _gluewheels_staging(destination: Path) -> Iterator[Path]:
+    """Yield a temp ``wheels/`` directory; zip the tree on context exit.
 
-
-def _create_gluewheels_zip(wheels_dir: Path, output_path: Path) -> int:
-    """Zip the workspace tree; return the number of ``.whl`` files included."""
-    root = wheels_dir.parent
-    wheel_count = 0
-    with ZipFile(output_path, "w", compression=ZIP_DEFLATED) as archive:
-        for path in wheels_dir.rglob("*"):
-            if not path.is_file():
-                continue
-            if path.suffix == ".whl":
-                wheel_count += 1
-            archive.write(path, arcname=path.relative_to(root))
-    return wheel_count
-
-
-def build_gluewheels_zip(job: GlueJobProject) -> GlueWheelsBuildResult:
-    """Build a ``.gluewheels.zip`` at the job's default artifact path.
-
-    Resolves and filters dependencies, downloads wheels, then zips the temp
-    workspace. Platform and Python version come from
-    ``job.runtime_metadata``.
+    Creates ``<temp>/wheels/``. After the ``with`` block, zips every file under
+    the temp root (arcnames relative to that root) and writes ``destination``.
 
     Args:
-        job: Resolved config from
-            :func:`~aws_glue_toolkit.job.load_pyproject`.
+        destination: Final path for the ``.gluewheels.zip`` file.
 
-    Returns:
-        Output path and wheel count (may be zero).
-
-    Raises:
-        GlueWheelsBuildError: ``pip`` resolution or download failed.
+    Yields:
+        Path to the ``wheels/`` subdirectory for population.
 
     """
-    packages = _packages_for_job(job)
-    runtime = job.runtime_metadata
-    python_version = runtime.core_engines.python
-    with _wheels_workspace() as wheels_dir:
+    with TemporaryDirectory() as tmp:
+        staging_root = Path(tmp)
+        wheels_dir = staging_root / "wheels"
+        wheels_dir.mkdir()
+        yield wheels_dir
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with ZipFile(destination, "w", compression=ZIP_DEFLATED) as archive:
+            for path in (p for p in staging_root.rglob("*") if p.is_file()):
+                archive.write(path, arcname=path.relative_to(staging_root))
+
+
+def _assemble_gluewheels_zip(
+    packages: Mapping[str, str],
+    destination: Path,
+    *,
+    python_version: str,
+    platform: str,
+) -> None:
+    """Write ``wheels/`` contents and produce ``destination``.
+
+    Writes ``wheels/requirements.txt`` with resolved pins, downloads wheels via
+    :func:`~aws_glue_toolkit.pip.download_wheels`, then zips via
+    :func:`_gluewheels_staging`.
+
+    Args:
+        packages: Resolved name → version pins to bundle.
+        destination: Final path for the ``.gluewheels.zip`` file.
+        python_version: Target Python (e.g. ``"3.11"``).
+        platform: ``pip --platform`` tag for Glue workers.
+
+    Raises:
+        GlueWheelsBuildError: ``pip`` download failed.
+
+    """
+    with _gluewheels_staging(destination) as wheels_dir:
+        (wheels_dir / "requirements.txt").write_text(
+            "\n".join(
+                f"{name}=={version}"
+                for name, version in sorted(packages.items())
+            ),
+            encoding="utf-8",
+        )
         try:
             download_wheels(
                 packages,
                 wheels_dir,
                 python_version=python_version,
-                platform=runtime.pip_platform,
+                platform=platform,
             )
         except PipError as exc:
             raise GlueWheelsBuildError(str(exc)) from exc
-        wheel_count = _create_gluewheels_zip(
-            wheels_dir,
-            job.glue_wheels_zip_path,
-        )
 
-    return GlueWheelsBuildResult(job.glue_wheels_zip_path, wheel_count)
+
+# --- Public API ---
+
+
+def build_gluewheels_zip(
+    requirements: Sequence[str],
+    glue_version: str,
+    destination: Path,
+) -> None:
+    """Create a ``.gluewheels.zip`` at ``destination``.
+
+    Args:
+        requirements: Direct dependency requirements (PEP 508 strings).
+        glue_version: Glue release key for
+            :func:`~aws_glue_toolkit.runtime.load_glue_runtime_metadata`.
+        destination: Final path for the ``.gluewheels.zip`` file.
+
+    Raises:
+        GlueWheelsBuildError: ``pip`` resolution or download failed.
+        KeyError: Unknown ``glue_version``.
+
+    """
+    runtime = load_glue_runtime_metadata(glue_version)
+    packages = _resolve_packages_to_bundle(
+        requirements,
+        runtime.python_packages,
+        python_version=runtime.core_engines.python,
+        platform=runtime.pip_platform,
+    )
+    _assemble_gluewheels_zip(
+        packages,
+        destination,
+        python_version=runtime.core_engines.python,
+        platform=runtime.pip_platform,
+    )

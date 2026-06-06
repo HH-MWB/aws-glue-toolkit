@@ -10,6 +10,7 @@
     "iceberg": "1.10.0",
     "delta_lake": "3.3.2"
   },
+  "pip_platform": "manylinux2014_x86_64",
   "python_packages": {
     "aiobotocore": "2.25.1",
     "aiohappyeyeballs": "2.6.1",

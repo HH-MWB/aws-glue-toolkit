@@ -1,4 +1,4 @@
-"""Job ``pyproject.toml``: TOML validation and :class:`GlueJobProject`.
+"""Glue job ``pyproject.toml``: TOML validation and :class:`GlueJobProject`.
 
 Pydantic models (:class:`PyProject`, etc.) mirror the file layout and validate
 input. :func:`load_pyproject` returns :class:`GlueJobProject` — the object
@@ -19,7 +19,7 @@ Example::
 
     from pathlib import Path
 
-    from aws_glue_toolkit.pyproject import load_pyproject
+    from aws_glue_toolkit.job import load_pyproject
 
     job = load_pyproject(Path("./my-glue-job"))
 
@@ -64,7 +64,7 @@ DEFAULT_PACKAGE_VERSION: Final[str] = "0.0.0"
 
 @dataclass(frozen=True, slots=True)
 class GlueJobProject:
-    """Resolved Glue job configuration passed to ``dependencies`` and ``cli``.
+    """Resolved Glue job configuration for ``pip``, ``wheels``, and ``cli``.
 
     Built only by :func:`load_pyproject`. Fields are fully resolved (no
     ``None`` for :attr:`version`).

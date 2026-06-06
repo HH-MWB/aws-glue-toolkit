@@ -1,16 +1,16 @@
 """Bundled AWS Glue runtime metadata per release.
 
 JSON under ``aws_glue_toolkit/versions/`` describes engine versions, open
-table formats, and preinstalled Python package pins for each supported Glue
-version.
+table formats, the ``pip`` wheel platform tag, and preinstalled Python package
+pins for each supported Glue version.
 
 :data:`SUPPORTED_GLUE_VERSIONS` lists bundled releases.
 :func:`load_glue_runtime_metadata` loads one release.
-:class:`~aws_glue_toolkit.pyproject.GlueJobProject` embeds the result when
+:class:`~aws_glue_toolkit.job.GlueJobProject` embeds the result when
 a job ``pyproject.toml`` is loaded.
 
-Used by :mod:`aws_glue_toolkit.dependencies` as compile constraints and to
-filter built-in packages from wheel builds.
+Used by :mod:`aws_glue_toolkit.pip` for constraints, platform, and Python
+version, and by :mod:`aws_glue_toolkit.wheels` to skip built-in packages.
 
 """
 
@@ -66,6 +66,8 @@ class GlueRuntimeMetadata:
         glue_version: Glue version string (e.g. ``"5.1"``).
         core_engines: Spark, Python, and Scala versions.
         table_formats: Hudi, Iceberg, and Delta Lake versions.
+        pip_platform: ``pip --platform`` tag for manylinux wheels on Glue
+            workers.
         python_packages: Preinstalled package name → version.
 
     """
@@ -73,6 +75,7 @@ class GlueRuntimeMetadata:
     glue_version: str
     core_engines: GlueCoreEngines
     table_formats: GlueTableFormats
+    pip_platform: str
     python_packages: Mapping[str, str]
 
 
@@ -100,5 +103,6 @@ def load_glue_runtime_metadata(
         glue_version=glue_version,
         core_engines=GlueCoreEngines(**payload["core_engines"]),
         table_formats=GlueTableFormats(**payload["table_formats"]),
+        pip_platform=payload["pip_platform"],
         python_packages=payload["python_packages"],
     )

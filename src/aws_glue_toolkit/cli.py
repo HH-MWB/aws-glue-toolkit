@@ -6,12 +6,11 @@ Commands:
 - ``build`` — write a ``.gluewheels.zip`` for extra Python libraries
 
 Job commands are registered with :func:`gtk_command`. That decorator loads
-``pyproject.toml`` into :class:`~aws_glue_toolkit.job.GlueJobProject`,
-runs the command body, and on failure looks up
-:data:`_GTK_EXCEPTION_HANDLERS` to print a Rich panel (or plain text for
-unexpected errors) on :attr:`~cyclopts.App.error_console` and return a
-:class:`GtkExitCode`. Commands that do not take a job directory register on
-:data:`app` with :meth:`~cyclopts.App.command` directly.
+``pyproject.toml`` via :func:`~aws_glue_toolkit.job.load_pyproject`, passes
+the resulting :class:`~aws_glue_toolkit.job.GlueJobProject` to the command,
+and on failure looks up :data:`_GTK_EXCEPTION_HANDLERS` to print a Rich panel
+(or plain text for unexpected errors) on :attr:`~cyclopts.App.error_console`
+and return a :class:`GtkExitCode`.
 
 Example::
 
@@ -24,23 +23,19 @@ from __future__ import annotations
 
 from enum import IntEnum
 from pathlib import Path
+from tomllib import TOMLDecodeError
 from typing import TYPE_CHECKING, Final, cast
 
 from cyclopts import App
+from pydantic import ValidationError
 from pydantic.types import (
     DirectoryPath,  # noqa: TC002  # CLI coercion needs runtime type
 )
 from rich.panel import Panel
 
-from aws_glue_toolkit.job import (
-    GlueJobProject,
-    InvalidPyProjectError,
-    InvalidTomlError,
-    MissingPyProjectError,
-    PyProjectUnreadableError,
-    load_pyproject,
-)
+from aws_glue_toolkit.job import GlueJobProject, load_pyproject
 from aws_glue_toolkit.pip import PipError, resolve_packages
+from aws_glue_toolkit.runtime import load_runtime
 from aws_glue_toolkit.wheels import GlueWheelsBuildError, build_gluewheels_zip
 
 if TYPE_CHECKING:
@@ -81,7 +76,7 @@ app = App(
 _GTK_EXCEPTION_HANDLERS: Final[
     dict[type[Exception], tuple[GtkExitCode, Panel]]
 ] = {
-    MissingPyProjectError: (
+    FileNotFoundError: (
         GtkExitCode.MISSING_PYPROJECT,
         Panel(
             "No pyproject.toml in the job directory.",
@@ -89,7 +84,7 @@ _GTK_EXCEPTION_HANDLERS: Final[
             border_style="red",
         ),
     ),
-    PyProjectUnreadableError: (
+    OSError: (
         GtkExitCode.PYPROJECT_UNREADABLE,
         Panel(
             "Could not read pyproject.toml.",
@@ -97,7 +92,7 @@ _GTK_EXCEPTION_HANDLERS: Final[
             border_style="red",
         ),
     ),
-    InvalidTomlError: (
+    TOMLDecodeError: (
         GtkExitCode.INVALID_TOML,
         Panel(
             "pyproject.toml is not valid TOML.",
@@ -105,7 +100,7 @@ _GTK_EXCEPTION_HANDLERS: Final[
             border_style="red",
         ),
     ),
-    InvalidPyProjectError: (
+    ValidationError: (
         GtkExitCode.INVALID_PYPROJECT,
         Panel(
             "pyproject.toml does not match the Glue job schema.",
@@ -164,7 +159,7 @@ def gtk_command(
 
     def wrapper(job_dir: DirectoryPath = Path()) -> int:
         try:
-            return fn(load_pyproject(job_dir.resolve()))
+            return fn(load_pyproject(job_dir))
         except Exception as exc:  # noqa: BLE001  # CLI shell; see _lookup_handler  # pylint: disable=broad-exception-caught
             exit_code, message = _lookup_handler(exc)
             if isinstance(message, Panel) and str(exc):
@@ -189,16 +184,18 @@ def gtk_command(
 def check(job: GlueJobProject) -> int:
     """Verify dependencies resolve for the job's Glue version.
 
-    Runs :func:`~aws_glue_toolkit.pip.resolve_packages` with bundled Glue
-    runtime pins, platform, and Python version. Skipped when the job has no
-    dependencies.
+    Loads bundled runtime metadata via
+    :func:`~aws_glue_toolkit.runtime.load_runtime`, then runs
+    :func:`~aws_glue_toolkit.pip.resolve_packages` with Glue runtime pins,
+    platform, and Python version. Skipped when the job has no dependencies.
     """
     if job.dependencies:
+        runtime = load_runtime(job.glue_version)
         resolve_packages(
             job.dependencies,
-            job.runtime_metadata.python_packages,
-            python_version=job.runtime_metadata.core_engines.python,
-            platform=job.runtime_metadata.pip_platform,
+            runtime.python_packages,
+            python_version=runtime.core_engines.python,
+            platform=runtime.pip_platform,
         )
     app.console.print(
         Panel(
@@ -214,18 +211,20 @@ def check(job: GlueJobProject) -> int:
 def build(job: GlueJobProject) -> int:
     """Build ``{name}-{version}.gluewheels.zip`` under the job directory.
 
-    Resolves dependencies, omits Glue built-ins at the same version, downloads
-    wheels for the runtime platform, and writes the job's default artifact
-    path.
+    Calls :func:`~aws_glue_toolkit.wheels.build_gluewheels_zip` with the job's
+    dependencies and ``glue_version``. Resolves dependencies, omits Glue
+    built-ins at the same version, downloads wheels for the runtime platform,
+    and writes ``job.project_dir / job.gluewheels_zip_filename``.
     """
+    destination = job.project_dir / job.gluewheels_zip_filename
     build_gluewheels_zip(
         job.dependencies,
         job.glue_version,
-        job.glue_wheels_zip_path,
+        destination,
     )
     app.console.print(
         Panel(
-            f"Wrote {job.glue_wheels_zip_path}.",
+            f"Wrote {destination}.",
             title="[bold green]Build complete[/]",
             border_style="green",
         ),

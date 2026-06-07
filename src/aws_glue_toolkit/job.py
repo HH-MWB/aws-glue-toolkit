@@ -13,7 +13,7 @@ Schema rules (unknown keys ignored):
 - ``project.version`` — optional; defaults to :data:`DEFAULT_PACKAGE_VERSION`
 - ``project.dependencies`` — optional; defaults to ``[]``
 - ``tool.aws-glue-toolkit.glue_version`` — optional; defaults to ``"5.1"``;
-  must be in :data:`~aws_glue_toolkit.runtime.SUPPORTED_GLUE_VERSIONS`
+  must match a bundled ``glue-{version}.json`` release
 
 Example::
 
@@ -30,14 +30,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path  # noqa: TC003  # runtime paths in load/read API
 from tomllib import TOMLDecodeError, loads
-from typing import Final, Literal
+from typing import Final
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from aws_glue_toolkit.runtime import (
-    SUPPORTED_GLUE_VERSIONS,
     GlueRuntimeMetadata,
-    load_glue_runtime_metadata,
+    UnsupportedGlueVersionError,
+    load_runtime,
 )
 
 __all__ = [
@@ -75,7 +75,7 @@ class GlueJobProject:
         version: ``[project].version`` or :data:`DEFAULT_PACKAGE_VERSION`.
         dependencies: ``[project].dependencies`` as an immutable tuple.
         glue_version: ``[tool.aws-glue-toolkit].glue_version``.
-        runtime_metadata: Bundled pins for :attr:`glue_version`.
+        runtime_metadata: Bundled runtime metadata for :attr:`glue_version`.
 
     """
 
@@ -115,9 +115,7 @@ class AwsGlueToolkit(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    glue_version: Literal[  # type: ignore[valid-type]
-        *SUPPORTED_GLUE_VERSIONS,
-    ] = "5.1"
+    glue_version: str = "5.1"
 
 
 class Tool(BaseModel):
@@ -165,7 +163,7 @@ class InvalidTomlError(PyProjectError):
 
 
 class InvalidPyProjectError(PyProjectError):
-    """File fails Pydantic schema validation."""
+    """Invalid ``pyproject.toml`` (schema or unsupported ``glue_version``)."""
 
 
 # --- Read, parse, and load ---
@@ -212,8 +210,12 @@ def parse_pyproject_text(text: str) -> PyProject:
 def load_pyproject(project_dir: Path) -> GlueJobProject:
     """Load ``project_dir/pyproject.toml`` and return resolved job config.
 
+    Loads bundled runtime metadata via
+    :func:`~aws_glue_toolkit.runtime.load_runtime`.
+
     Raises:
-        PyProjectError: Missing file, read error, or invalid contents.
+        PyProjectError: Missing file, read error, invalid TOML/schema, or
+            unsupported ``glue_version``.
 
     """
     root = project_dir.resolve()
@@ -221,11 +223,15 @@ def load_pyproject(project_dir: Path) -> GlueJobProject:
     pyproject = parse_pyproject_text(read_pyproject_text(root))
 
     glue_version = pyproject.tool.aws_glue_toolkit.glue_version
+    try:
+        runtime_metadata = load_runtime(glue_version)
+    except UnsupportedGlueVersionError as e:
+        raise InvalidPyProjectError(str(e)) from e
     return GlueJobProject(
         project_dir=root,
         name=pyproject.project.name,
         version=pyproject.project.version or DEFAULT_PACKAGE_VERSION,
         dependencies=tuple(pyproject.project.dependencies),
         glue_version=glue_version,
-        runtime_metadata=load_glue_runtime_metadata(glue_version),
+        runtime_metadata=runtime_metadata,
     )

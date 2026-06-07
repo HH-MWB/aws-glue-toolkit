@@ -12,7 +12,8 @@ into a zip artifact per `AWS Glue Appendix A
 
 Pipeline:
 
-1. Load runtime metadata for ``glue_version`` (constraints, Python, platform).
+1. :func:`~aws_glue_toolkit.runtime.load_runtime` for constraints, Python,
+   and platform.
 2. Resolve requirements and omit Glue built-ins at the same pinned version.
 3. Stage ``wheels/``, write ``requirements.txt``, download wheels.
 4. Zip the staging tree to ``destination``.
@@ -32,7 +33,7 @@ from typing import TYPE_CHECKING
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from aws_glue_toolkit.pip import PipError, download_wheels, resolve_packages
-from aws_glue_toolkit.runtime import load_glue_runtime_metadata
+from aws_glue_toolkit.runtime import load_runtime
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping, Sequence
@@ -182,16 +183,16 @@ def build_gluewheels_zip(
 
     Args:
         requirements: Direct dependency requirements (PEP 508 strings).
-        glue_version: Glue release key for
-            :func:`~aws_glue_toolkit.runtime.load_glue_runtime_metadata`.
+        glue_version: Glue version string (e.g. ``"5.1"``); passed to
+            :func:`~aws_glue_toolkit.runtime.load_runtime`.
         destination: Final path for the ``.gluewheels.zip`` file.
 
     Raises:
         GlueWheelsBuildError: ``pip`` resolution or download failed.
-        KeyError: Unknown ``glue_version``.
+        UnsupportedGlueVersionError: No bundled metadata for ``glue_version``.
 
     """
-    runtime = load_glue_runtime_metadata(glue_version)
+    runtime = load_runtime(glue_version)
     packages = _resolve_packages_to_bundle(
         requirements,
         runtime.python_packages,

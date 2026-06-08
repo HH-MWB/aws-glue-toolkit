@@ -12,8 +12,8 @@ into a zip artifact per `AWS Glue Appendix A
 
 Pipeline:
 
-1. :func:`~aws_glue_toolkit.runtime.load_runtime` for constraints, Python,
-   and platform.
+1. :class:`~aws_glue_toolkit.runtime.GlueRuntimeMetadata` for constraints,
+   Python, and platform.
 2. Resolve requirements and omit Glue built-ins at the same pinned version.
 3. Stage ``wheels/``, write ``requirements.txt``, download wheels.
 4. Zip the staging tree to ``destination``.
@@ -33,10 +33,11 @@ from typing import TYPE_CHECKING
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from aws_glue_toolkit.pip import PipError, download_wheels, resolve_packages
-from aws_glue_toolkit.runtime import load_runtime
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping, Sequence
+
+    from aws_glue_toolkit.runtime import GlueRuntimeMetadata
 
 __all__ = [
     "GlueWheelsBuildError",
@@ -51,7 +52,8 @@ class GlueWheelsBuildError(Exception):
     """Building a ``.gluewheels.zip`` failed.
 
     Resolution and download failures from :mod:`aws_glue_toolkit.pip` wrap
-    :exc:`~aws_glue_toolkit.pip.PipError` for callers and the CLI.
+    :exc:`~aws_glue_toolkit.pip.PipError`. The CLI maps this to
+    :attr:`~aws_glue_toolkit.cli.GtkExitCode.SOFTWARE`.
     """
 
 
@@ -176,23 +178,20 @@ def _assemble_gluewheels_zip(
 
 def build_gluewheels_zip(
     requirements: Sequence[str],
-    glue_version: str,
+    runtime: GlueRuntimeMetadata,
     destination: Path,
 ) -> None:
     """Create a ``.gluewheels.zip`` at ``destination``.
 
     Args:
         requirements: Direct dependency requirements (PEP 508 strings).
-        glue_version: Glue version string (e.g. ``"5.1"``); passed to
-            :func:`~aws_glue_toolkit.runtime.load_runtime`.
+        runtime: Bundled Glue runtime metadata (constraints, Python, platform).
         destination: Final path for the ``.gluewheels.zip`` file.
 
     Raises:
         GlueWheelsBuildError: ``pip`` resolution or download failed.
-        UnsupportedGlueVersionError: No bundled metadata for ``glue_version``.
 
     """
-    runtime = load_runtime(glue_version)
     packages = _resolve_packages_to_bundle(
         requirements,
         runtime.python_packages,

@@ -1,16 +1,17 @@
 """Glue job ``pyproject.toml``: TOML validation and :class:`GlueJobProject`.
 
 Private Pydantic models mirror the file layout and validate input.
-:func:`load_pyproject` reads ``project_dir/pyproject.toml`` and returns
-:class:`GlueJobProject` with defaults applied. It does not load Glue runtime
-metadata or verify ``glue_version`` against bundled releases.
+:func:`load_pyproject` reads ``project_dir/pyproject.toml``, resolves bundled
+Glue runtime metadata for ``tool.aws-glue-toolkit.glue_version``, and returns
+:class:`GlueJobProject` with defaults applied.
 
 Schema rules (unknown keys ignored):
 
 - ``project.name`` — required
 - ``project.version`` — optional; defaults to :data:`DEFAULT_PACKAGE_VERSION`
 - ``project.dependencies`` — optional; defaults to ``[]``
-- ``tool.aws-glue-toolkit.glue_version`` — required
+- ``tool.aws-glue-toolkit.glue_version`` — required; resolved via
+  :func:`~aws_glue_toolkit.runtime.load_runtime`
 
 Example::
 
@@ -19,6 +20,7 @@ Example::
     from aws_glue_toolkit.job import load_pyproject
 
     job = load_pyproject(Path("./my-glue-job"))
+    job.runtime.glue_version
 
 """
 
@@ -29,6 +31,8 @@ from tomllib import loads
 from typing import TYPE_CHECKING, Final
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from aws_glue_toolkit.runtime import GlueRuntimeMetadata, load_runtime
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -57,7 +61,8 @@ class GlueJobProject:
         version: ``[project].version`` (defaults to
             :data:`DEFAULT_PACKAGE_VERSION`).
         dependencies: ``[project].dependencies`` as an immutable tuple.
-        glue_version: ``[tool.aws-glue-toolkit].glue_version``.
+        runtime: Bundled Glue runtime metadata for
+            ``[tool.aws-glue-toolkit].glue_version``.
 
     """
 
@@ -65,7 +70,7 @@ class GlueJobProject:
     name: str
     version: str
     dependencies: tuple[str, ...]
-    glue_version: str
+    runtime: GlueRuntimeMetadata
 
     @property
     def gluewheels_zip_filename(self) -> str:
@@ -124,6 +129,8 @@ def load_pyproject(project_dir: Path) -> GlueJobProject:
         OSError: ``pyproject.toml`` exists but could not be read.
         TOMLDecodeError: TOML syntax error.
         ValidationError: ``pyproject.toml`` failed schema validation.
+        UnsupportedGlueVersionError: No bundled metadata for
+            ``tool.aws-glue-toolkit.glue_version``.
 
     """
     pyproject = _PyProject.model_validate(
@@ -134,5 +141,5 @@ def load_pyproject(project_dir: Path) -> GlueJobProject:
         name=pyproject.project.name,
         version=pyproject.project.version,
         dependencies=tuple(pyproject.project.dependencies),
-        glue_version=pyproject.tool.aws_glue_toolkit.glue_version,
+        runtime=load_runtime(pyproject.tool.aws_glue_toolkit.glue_version),
     )

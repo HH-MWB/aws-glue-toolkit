@@ -6,11 +6,14 @@ Commands:
 - ``build`` — write a ``.gluewheels.zip`` for extra Python libraries
 
 Job commands are registered with :func:`gtk_command`. That decorator loads
-``pyproject.toml`` via :func:`~aws_glue_toolkit.job.load_pyproject`, passes
-the resulting :class:`~aws_glue_toolkit.job.GlueJobProject` to the command,
-and on failure looks up :data:`_GTK_EXCEPTION_HANDLERS` to print a Rich panel
-(or plain text for unexpected errors) on :attr:`~cyclopts.App.error_console`
-and return a :class:`GtkExitCode`.
+the job via :func:`_load_job_project`, passes the resulting
+:class:`~aws_glue_toolkit.job.GlueJobProject` to the command,
+and on failure prints a Rich panel from :exc:`GtkCommandError` on
+:attr:`~cyclopts.App.error_console` and returns a :class:`GtkExitCode`
+(BSD ``sysexits.h``, 64-78). On success, commands return a Rich panel
+that Cyclopts prints and exits ``0``. Unhandled exceptions propagate
+with exit code ``1``. Pyproject load failures and command domain failures
+raise :exc:`GtkCommandError` locally.
 
 Example::
 
@@ -24,7 +27,7 @@ from __future__ import annotations
 from enum import IntEnum
 from pathlib import Path
 from tomllib import TOMLDecodeError
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, cast
 
 from cyclopts import App
 from pydantic import ValidationError
@@ -35,33 +38,13 @@ from rich.panel import Panel
 
 from aws_glue_toolkit.job import GlueJobProject, load_pyproject
 from aws_glue_toolkit.pip import PipError, resolve_packages
-from aws_glue_toolkit.runtime import load_runtime
+from aws_glue_toolkit.runtime import UnsupportedGlueVersionError
 from aws_glue_toolkit.wheels import GlueWheelsBuildError, build_gluewheels_zip
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
 __all__ = ["app"]
-
-# --- Exit codes ---
-
-
-class GtkExitCode(IntEnum):
-    """Process exit codes returned by ``gtk`` subcommands.
-
-    Members ``OK`` and ``UNEXPECTED`` are used outside
-    :data:`_GTK_EXCEPTION_HANDLERS`. The rest pair with known failure types.
-    """
-
-    OK = 0
-    DEPENDENCY_CONFLICT = 1
-    MISSING_PYPROJECT = 2
-    PYPROJECT_UNREADABLE = 3
-    INVALID_TOML = 4
-    INVALID_PYPROJECT = 5
-    BUILD_FAILED = 7
-    UNEXPECTED = 9
-
 
 # --- App ---
 
@@ -70,163 +53,173 @@ app = App(
     result_action="print_non_int_sys_exit",
 )
 
+# --- Exit codes ---
+
+
+class GtkExitCode(IntEnum):
+    """Process exit codes returned by ``gtk`` subcommands on failure.
+
+    Values follow BSD ``sysexits.h`` (64-78): ``0`` is success (returned
+    implicitly via a success :class:`~rich.panel.Panel`), ``1`` is reserved for
+    unhandled failures. Each member pairs with :exc:`GtkCommandError`.
+    """
+
+    DATAERR = 65  # unsatisfiable requirements
+    NOINPUT = 66  # cannot read pyproject.toml
+    SOFTWARE = 70  # wheel build pipeline failed
+    CONFIG = 78  # invalid or unsupported job config
+
+
 # --- Exception handling ---
 
-# Maps exception type → (exit code, error panel for app.error_console).
-_GTK_EXCEPTION_HANDLERS: Final[
-    dict[type[Exception], tuple[GtkExitCode, Panel]]
-] = {
-    FileNotFoundError: (
-        GtkExitCode.MISSING_PYPROJECT,
-        Panel(
-            "No pyproject.toml in the job directory.",
-            title="[bold red]Missing pyproject.toml[/]",
-            border_style="red",
-        ),
-    ),
-    OSError: (
-        GtkExitCode.PYPROJECT_UNREADABLE,
-        Panel(
-            "Could not read pyproject.toml.",
-            title="[bold red]Cannot read pyproject.toml[/]",
-            border_style="red",
-        ),
-    ),
-    TOMLDecodeError: (
-        GtkExitCode.INVALID_TOML,
-        Panel(
-            "pyproject.toml is not valid TOML.",
-            title="[bold red]Invalid TOML[/]",
-            border_style="red",
-        ),
-    ),
-    ValidationError: (
-        GtkExitCode.INVALID_PYPROJECT,
-        Panel(
-            "pyproject.toml does not match the Glue job schema.",
-            title="[bold red]Invalid pyproject.toml[/]",
-            border_style="red",
-        ),
-    ),
-    PipError: (
-        GtkExitCode.DEPENDENCY_CONFLICT,
-        Panel(
-            "Requirements are unsatisfiable with bundled Glue pins.",
-            title="[bold red]Conflicts detected[/]",
-            border_style="red",
-        ),
-    ),
-    GlueWheelsBuildError: (
-        GtkExitCode.BUILD_FAILED,
-        Panel(
-            "Building .gluewheels.zip failed.",
-            title="[bold red]Build failed[/]",
-            border_style="red",
-        ),
-    ),
-}
 
+class GtkCommandError(Exception):
+    """CLI command failure with exit code and user-facing title/message.
 
-def _lookup_handler(exc: Exception) -> tuple[GtkExitCode, str | Panel]:
-    """Map ``exc`` to an exit code and printable error output.
+    Attributes:
+        exit_code: :class:`GtkExitCode` for the failure.
+        title: Short panel header (rendered bold red by :func:`gtk_command`).
+        message: Panel body text (usually the underlying exception message).
 
-    Walks ``type(exc).__mro__`` for the first key in
-    :data:`_GTK_EXCEPTION_HANDLERS`. Unregistered exceptions use
-    :attr:`GtkExitCode.UNEXPECTED` and a ``[ExceptionName] …`` string (not a
-    panel).
     """
-    for exc_type in type(exc).__mro__:
-        if exc_type in _GTK_EXCEPTION_HANDLERS:
-            return _GTK_EXCEPTION_HANDLERS[exc_type]
-    return GtkExitCode.UNEXPECTED, f"[{type(exc).__name__}] {exc}"
+
+    def __init__(
+        self,
+        exit_code: GtkExitCode,
+        title: str,
+        message: str,
+    ) -> None:
+        """Store exit code, title, and message for the command shell."""
+        self.exit_code = exit_code
+        self.title = title
+        self.message = message
+
+
+def _load_job_project(job_dir: Path) -> GlueJobProject:
+    """Load ``job_dir/pyproject.toml`` or raise :exc:`GtkCommandError`.
+
+    Raises:
+        GtkCommandError: :attr:`~GtkExitCode.NOINPUT` when the file cannot
+            be read; :attr:`~GtkExitCode.CONFIG` for TOML, schema, or
+            unsupported Glue version errors.
+
+    """
+    try:
+        return load_pyproject(job_dir)
+    except (FileNotFoundError, OSError) as err:
+        raise GtkCommandError(
+            GtkExitCode.NOINPUT,
+            "Cannot read pyproject.toml",
+            str(err),
+        ) from None
+    except (
+        TOMLDecodeError,
+        ValidationError,
+        UnsupportedGlueVersionError,
+    ) as err:
+        raise GtkCommandError(
+            GtkExitCode.CONFIG,
+            "Invalid pyproject.toml",
+            str(err),
+        ) from None
 
 
 def gtk_command(
-    fn: Callable[[GlueJobProject], int],
-) -> Callable[[DirectoryPath], int]:
+    fn: Callable[[GlueJobProject], Panel],
+) -> Callable[[DirectoryPath], Panel | GtkExitCode]:
     """Register ``fn`` as a Cyclopts command with one ``job_dir`` argument.
 
-    Loads :func:`~aws_glue_toolkit.job.load_pyproject`, passes the
-    resulting :class:`~aws_glue_toolkit.job.GlueJobProject` to ``fn``,
-    and expects an :class:`GtkExitCode` return value. Any other
-    :exc:`Exception` is handled by :func:`_lookup_handler` (print + non-zero
-    exit code).
+    Loads the job via :func:`_load_job_project`, passes the resulting
+    :class:`~aws_glue_toolkit.job.GlueJobProject` to ``fn``,
+    and expects a success :class:`~rich.panel.Panel` return value (printed
+    by Cyclopts; exit ``0``). :exc:`GtkCommandError` (from pyproject load
+    or the command body) is rendered as a red Rich panel on
+    :attr:`~cyclopts.App.error_console` with the matching
+    :class:`GtkExitCode`.
 
     Copies ``__name__`` and ``__doc__`` from the inner function only (not
     ``functools.wraps``), so Cyclopts does not expose inner parameters
     (such as ``--job.name``) on the CLI.
     """
 
-    def wrapper(job_dir: DirectoryPath = Path()) -> int:
+    def wrapper(job_dir: DirectoryPath = Path()) -> Panel | GtkExitCode:
         try:
-            return fn(load_pyproject(job_dir))
-        except Exception as exc:  # noqa: BLE001  # CLI shell; see _lookup_handler  # pylint: disable=broad-exception-caught
-            exit_code, message = _lookup_handler(exc)
-            if isinstance(message, Panel) and str(exc):
-                message = Panel(
-                    f"{message.renderable}\n\n{exc}",
-                    title=message.title,
-                    border_style=message.border_style,
-                )
-            app.error_console.print(message)
-            return exit_code
+            return fn(_load_job_project(job_dir))
+        except GtkCommandError as err:
+            app.error_console.print(
+                Panel(
+                    err.message,
+                    title=f"[bold red]{err.title}[/]",
+                    border_style="red",
+                ),
+            )
+            return err.exit_code
 
     wrapper.__name__ = fn.__name__
     wrapper.__doc__ = fn.__doc__
 
-    return cast("Callable[[DirectoryPath], int]", app.command(wrapper))
+    return cast(
+        "Callable[[DirectoryPath], Panel | GtkExitCode]",
+        app.command(wrapper),
+    )
 
 
 # --- Commands ---
 
 
 @gtk_command
-def check(job: GlueJobProject) -> int:
-    """Verify dependencies resolve for the job's Glue version.
+def check(job: GlueJobProject) -> Panel:
+    """Verify dependencies resolve for the job's Glue runtime.
 
-    Loads bundled runtime metadata via
-    :func:`~aws_glue_toolkit.runtime.load_runtime`, then runs
-    :func:`~aws_glue_toolkit.pip.resolve_packages` with Glue runtime pins,
-    platform, and Python version. Skipped when the job has no dependencies.
+    Runs :func:`~aws_glue_toolkit.pip.resolve_packages` with
+    :attr:`~aws_glue_toolkit.job.GlueJobProject.runtime` pins, platform,
+    and Python version. Raises :exc:`GtkCommandError` with
+    :attr:`~GtkExitCode.DATAERR` when requirements are unsatisfiable.
     """
-    if job.dependencies:
-        runtime = load_runtime(job.glue_version)
+    try:
         resolve_packages(
             job.dependencies,
-            runtime.python_packages,
-            python_version=runtime.core_engines.python,
-            platform=runtime.pip_platform,
+            job.runtime.python_packages,
+            python_version=job.runtime.core_engines.python,
+            platform=job.runtime.pip_platform,
         )
-    app.console.print(
-        Panel(
-            "Dependencies resolve against Glue runtime pins.",
-            title="[bold green]No conflicts[/]",
-            border_style="green",
-        ),
+    except PipError:
+        raise GtkCommandError(
+            GtkExitCode.DATAERR,
+            "Conflicts detected",
+            "Requirements are unsatisfiable with bundled Glue pins.",
+        ) from None
+    return Panel(
+        "Dependencies resolve against Glue runtime pins.",
+        title="[bold green]No conflicts[/]",
+        border_style="green",
     )
-    return GtkExitCode.OK
 
 
 @gtk_command
-def build(job: GlueJobProject) -> int:
+def build(job: GlueJobProject) -> Panel:
     """Build ``{name}-{version}.gluewheels.zip`` under the job directory.
 
     Calls :func:`~aws_glue_toolkit.wheels.build_gluewheels_zip` with the job's
-    dependencies and ``glue_version``. Resolves dependencies, omits Glue
-    built-ins at the same version, downloads wheels for the runtime platform,
-    and writes ``job.project_dir / job.gluewheels_zip_filename``.
+    dependencies and :attr:`~aws_glue_toolkit.job.GlueJobProject.runtime`.
+    Raises :exc:`GtkCommandError` with :attr:`~GtkExitCode.SOFTWARE` when
+    the build fails. Writes ``job.project_dir / job.gluewheels_zip_filename``.
     """
     destination = job.project_dir / job.gluewheels_zip_filename
-    build_gluewheels_zip(
-        job.dependencies,
-        job.glue_version,
-        destination,
+    try:
+        build_gluewheels_zip(
+            job.dependencies,
+            job.runtime,
+            destination,
+        )
+    except GlueWheelsBuildError:
+        raise GtkCommandError(
+            GtkExitCode.SOFTWARE,
+            "Build failed",
+            "Building .gluewheels.zip failed.",
+        ) from None
+    return Panel(
+        f"Wrote {destination}.",
+        title="[bold green]Build complete[/]",
+        border_style="green",
     )
-    app.console.print(
-        Panel(
-            f"Wrote {destination}.",
-            title="[bold green]Build complete[/]",
-            border_style="green",
-        ),
-    )
-    return GtkExitCode.OK

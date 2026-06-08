@@ -12,10 +12,12 @@ Each supported Glue version has a JSON file shipped in the wheel at
 
 Bundled JSON is validated before release.
 :func:`load_runtime` is the public entry point; it raises
-:exc:`UnsupportedGlueVersionError` when a version file is missing. Callers
-(such as :mod:`aws_glue_toolkit.cli` and :mod:`aws_glue_toolkit.wheels`) pass
-:attr:`~aws_glue_toolkit.job.GlueJobProject.glue_version` or an explicit
-version string.
+:exc:`UnsupportedGlueVersionError` when a version file is missing.
+:mod:`aws_glue_toolkit.job` calls it when loading ``pyproject.toml`` into
+:attr:`~aws_glue_toolkit.job.GlueJobProject.runtime`.
+:mod:`aws_glue_toolkit.cli` and :mod:`aws_glue_toolkit.wheels` consume
+:class:`GlueRuntimeMetadata` (or one loaded directly via
+:func:`load_runtime`).
 
 :mod:`aws_glue_toolkit.pip` uses the pins as constraints;
 :mod:`aws_glue_toolkit.wheels` uses them to omit packages already on the

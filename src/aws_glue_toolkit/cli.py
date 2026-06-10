@@ -39,7 +39,7 @@ from rich.panel import Panel
 from aws_glue_toolkit.job import GlueJobProject, load_pyproject
 from aws_glue_toolkit.pip import PipError, resolve_packages
 from aws_glue_toolkit.runtime import UnsupportedGlueVersionError
-from aws_glue_toolkit.wheels import GlueWheelsBuildError, build_gluewheels_zip
+from aws_glue_toolkit.wheels import build_gluewheels_zip
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -174,7 +174,8 @@ def check(job: GlueJobProject) -> Panel:
     Runs :func:`~aws_glue_toolkit.pip.resolve_packages` with
     :attr:`~aws_glue_toolkit.job.GlueJobProject.runtime` pins, platform,
     and Python version. Raises :exc:`GtkCommandError` with
-    :attr:`~GtkExitCode.DATAERR` when requirements are unsatisfiable.
+    :attr:`~GtkExitCode.DATAERR` when that call raises
+    :exc:`~aws_glue_toolkit.pip.PipError`.
     """
     try:
         resolve_packages(
@@ -203,7 +204,8 @@ def build(job: GlueJobProject) -> Panel:
     Calls :func:`~aws_glue_toolkit.wheels.build_gluewheels_zip` with the job's
     dependencies and :attr:`~aws_glue_toolkit.job.GlueJobProject.runtime`.
     Raises :exc:`GtkCommandError` with :attr:`~GtkExitCode.SOFTWARE` when
-    the build fails. Writes ``job.project_dir / job.gluewheels_zip_filename``.
+    that call raises :exc:`~aws_glue_toolkit.pip.PipError`. Writes
+    ``job.project_dir / job.gluewheels_zip_filename``.
     """
     destination = job.project_dir / job.gluewheels_zip_filename
     try:
@@ -212,7 +214,7 @@ def build(job: GlueJobProject) -> Panel:
             job.runtime,
             destination,
         )
-    except GlueWheelsBuildError:
+    except PipError:
         raise GtkCommandError(
             GtkExitCode.SOFTWARE,
             "Build failed",

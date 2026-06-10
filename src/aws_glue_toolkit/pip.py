@@ -5,7 +5,9 @@ Requires ``pip>=22.2`` (see ``pyproject.toml``) for ``--dry-run --report``.
 Callers supply ``platform``, ``python_version``, and package pins from
 :class:`~aws_glue_toolkit.runtime.GlueRuntimeMetadata` (for example
 :attr:`~aws_glue_toolkit.job.GlueJobProject.runtime` in the CLI). The CLI
-maps :exc:`PipError` to :attr:`~aws_glue_toolkit.cli.GtkExitCode.DATAERR`.
+``check`` command maps :exc:`PipError` to
+:attr:`~aws_glue_toolkit.cli.GtkExitCode.DATAERR`; ``build`` maps it to
+:attr:`~aws_glue_toolkit.cli.GtkExitCode.SOFTWARE`.
 
 Public API: :func:`resolve_packages`, :func:`download_wheels`, :exc:`PipError`.
 

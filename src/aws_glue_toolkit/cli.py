@@ -3,7 +3,7 @@
 Commands:
 
 - ``check`` — resolve dependencies against bundled Glue runtime pins
-- ``build`` — write a ``.gluewheels.zip`` for extra Python libraries
+- ``build`` — write ``.gluewheels.zip`` and ``.dependencies.zip`` artifacts
 
 Job commands are registered with :func:`gtk_command`. That decorator loads
 the job via :func:`_load_job_project`, passes the resulting
@@ -36,10 +36,13 @@ from pydantic.types import (
 )
 from rich.panel import Panel
 
+from aws_glue_toolkit.artifacts import (
+    build_dependencies_zip,
+    build_gluewheels_zip,
+)
 from aws_glue_toolkit.job import GlueJobProject, load_pyproject
 from aws_glue_toolkit.pip import PipError, resolve_packages
 from aws_glue_toolkit.runtime import UnsupportedGlueVersionError
-from aws_glue_toolkit.wheels import build_gluewheels_zip
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -115,6 +118,7 @@ def _load_job_project(job_dir: Path) -> GlueJobProject:
     except (
         TOMLDecodeError,
         ValidationError,
+        ValueError,
         UnsupportedGlueVersionError,
     ) as err:
         raise GtkCommandError(
@@ -199,29 +203,32 @@ def check(job: GlueJobProject) -> Panel:
 
 @gtk_command
 def build(job: GlueJobProject) -> Panel:
-    """Build ``{name}-{version}.gluewheels.zip`` under the job directory.
+    """Build gluewheels and dependencies zips under the job directory.
 
-    Calls :func:`~aws_glue_toolkit.wheels.build_gluewheels_zip` with the job's
-    dependencies and :attr:`~aws_glue_toolkit.job.GlueJobProject.runtime`.
-    Raises :exc:`GtkCommandError` with :attr:`~GtkExitCode.SOFTWARE` when
-    that call raises :exc:`~aws_glue_toolkit.pip.PipError`. Writes
-    ``job.project_dir / job.gluewheels_zip_filename``.
+    Calls :func:`~aws_glue_toolkit.artifacts.build_gluewheels_zip` and
+    :func:`~aws_glue_toolkit.artifacts.build_dependencies_zip`. Raises
+    :exc:`GtkCommandError` with :attr:`~GtkExitCode.SOFTWARE` when either
+    builder raises :exc:`~aws_glue_toolkit.pip.PipError` or :exc:`OSError`.
     """
-    destination = job.project_dir / job.gluewheels_zip_filename
     try:
+        build_dependencies_zip(
+            job.source_dir,
+            job.script,
+            job.project_dir / job.dependencies_zip_filename,
+        )
         build_gluewheels_zip(
             job.dependencies,
             job.runtime,
-            destination,
+            job.project_dir / job.gluewheels_zip_filename,
         )
-    except PipError:
+    except (OSError, PipError) as err:
         raise GtkCommandError(
             GtkExitCode.SOFTWARE,
             "Build failed",
-            "Building .gluewheels.zip failed.",
+            str(err),
         ) from None
     return Panel(
-        f"Wrote {destination}.",
+        f"Wrote zip files to {job.project_dir}.",
         title="[bold green]Build complete[/]",
         border_style="green",
     )

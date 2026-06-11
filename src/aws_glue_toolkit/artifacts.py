@@ -1,25 +1,24 @@
-"""Build AWS Glue ``.gluewheels.zip`` wheel archives.
+"""Build zip artifacts produced by ``gtk build`` for AWS Glue job deployment.
 
-For Glue 5.0+ ``--additional-python-modules``, packages extra Python libraries
-into a zip artifact per `AWS Glue Appendix A
-<https://docs.aws.amazon.com/glue/latest/dg/aws-glue-programming-python-libraries.html>`_:
+Two artifacts, two Glue job parameters:
 
-::
+- ``{name}-{version}.dependencies.zip`` — for ``--extra-py-files``. Zips
+  every ``.py`` file under the job ``source`` tree except the entry
+  ``script``, preserving paths relative to ``source``.
 
-    wheels/
-      requirements.txt   # resolved ``name==version`` pins
-      *.whl
+- ``{name}-{version}.gluewheels.zip`` — for ``--additional-python-modules``
+  (Glue 5.0+). Resolves job dependencies against bundled runtime pins,
+  downloads wheels, and bundles them per `AWS Glue Appendix A
+  <https://docs.aws.amazon.com/glue/latest/dg/aws-glue-programming-python-libraries.html>`_::
 
-Pipeline (see :func:`build_gluewheels_zip`):
+      wheels/
+        requirements.txt   # resolved ``name==version`` pins
+        *.whl
 
-1. :class:`~aws_glue_toolkit.runtime.GlueRuntimeMetadata` supplies
-   constraints, Python, and platform.
-2. Resolve packages to bundle.
-3. Assemble gluewheels zip.
+Public API: :func:`build_dependencies_zip`, :func:`build_gluewheels_zip`.
 
-Public API: :func:`build_gluewheels_zip`.
-
-Always writes ``destination``, including when there are zero wheels to bundle.
+Both builders always write ``destination``, even when there is nothing to
+bundle.
 
 """
 
@@ -39,8 +38,38 @@ if TYPE_CHECKING:
     from aws_glue_toolkit.runtime import GlueRuntimeMetadata
 
 __all__ = [
+    "build_dependencies_zip",
     "build_gluewheels_zip",
 ]
+
+# --- Dependencies zip ---
+
+
+def build_dependencies_zip(
+    source_dir: Path,
+    entry_script: Path,
+    destination: Path,
+) -> None:
+    """Create a ``.dependencies.zip`` at ``destination``.
+
+    Zips every ``.py`` file under ``source_dir`` except ``entry_script``,
+    preserving paths relative to ``source_dir``.
+
+    Args:
+        source_dir: Job Python source root.
+        entry_script: Resolved entry script path under ``source_dir``.
+        destination: Final path for the ``.dependencies.zip`` file.
+
+    """
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with ZipFile(destination, "w", compression=ZIP_DEFLATED) as archive:
+        for path in source_dir.rglob("*.py"):
+            if path == entry_script:
+                continue
+            archive.write(path, arcname=str(path.relative_to(source_dir)))
+
+
+# --- Gluewheels zip ---
 
 
 @contextmanager

@@ -12,6 +12,9 @@ Schema rules (unknown keys ignored):
 - ``project.dependencies`` — optional; defaults to ``[]``
 - ``tool.aws-glue-toolkit.glue_version`` — required; resolved via
   :func:`~aws_glue_toolkit.runtime.load_runtime`
+- ``tool.aws-glue-toolkit.source`` — required; job Python source directory
+- ``tool.aws-glue-toolkit.script`` — required; entry script path under
+  ``source``
 
 Example::
 
@@ -50,27 +53,36 @@ DEFAULT_PACKAGE_VERSION: Final[str] = "0.0.0"
 
 @dataclass(frozen=True, slots=True)
 class GlueJobProject:
-    """Resolved Glue job configuration for ``pip``, ``wheels``, and ``cli``.
+    """Resolved Glue job configuration for ``pip``, ``artifacts``, and ``cli``.
 
     Built only by :func:`load_pyproject`.
     Fields are fully resolved (no ``None`` for :attr:`version`).
 
     Attributes:
-        project_dir: Directory containing ``pyproject.toml``.
         name: ``[project].name``.
         version: ``[project].version`` (defaults to
             :data:`DEFAULT_PACKAGE_VERSION`).
+        project_dir: Directory containing ``pyproject.toml``.
+        source_dir: Resolved ``project_dir / source``.
+        script: Resolved entry script path under :attr:`source_dir`.
         dependencies: ``[project].dependencies`` as an immutable tuple.
         runtime: Bundled Glue runtime metadata for
             ``[tool.aws-glue-toolkit].glue_version``.
 
     """
 
-    project_dir: Path
     name: str
     version: str
+    project_dir: Path
+    source_dir: Path
+    script: Path
     dependencies: tuple[str, ...]
     runtime: GlueRuntimeMetadata
+
+    @property
+    def dependencies_zip_filename(self) -> str:
+        """File name ``{name}-{version}.dependencies.zip``."""
+        return f"{self.name}-{self.version}.dependencies.zip"
 
     @property
     def gluewheels_zip_filename(self) -> str:
@@ -97,6 +109,8 @@ class _AwsGlueToolkit(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     glue_version: str
+    source: str
+    script: str
 
 
 class _Tool(BaseModel):
@@ -129,17 +143,33 @@ def load_pyproject(project_dir: Path) -> GlueJobProject:
         OSError: ``pyproject.toml`` exists but could not be read.
         TOMLDecodeError: TOML syntax error.
         ValidationError: ``pyproject.toml`` failed schema validation.
+        ValueError: ``source`` or ``script`` layout is invalid.
         UnsupportedGlueVersionError: No bundled metadata for
             ``tool.aws-glue-toolkit.glue_version``.
 
     """
+    # Parse and validate pyproject.toml.
     pyproject = _PyProject.model_validate(
         loads((project_dir / "pyproject.toml").read_text(encoding="utf-8")),
     )
+
+    # Resolve source directory and entry script on disk.
+    source_dir = project_dir / pyproject.tool.aws_glue_toolkit.source
+    if not source_dir.is_dir():
+        msg = f"source directory not found: {source_dir}"
+        raise ValueError(msg)
+    script_path = source_dir / pyproject.tool.aws_glue_toolkit.script
+    if not script_path.is_file():
+        msg = f"script not found: {script_path}"
+        raise ValueError(msg)
+
+    # Return resolved job config.
     return GlueJobProject(
-        project_dir=project_dir,
         name=pyproject.project.name,
         version=pyproject.project.version,
+        project_dir=project_dir,
+        source_dir=source_dir,
+        script=script_path,
         dependencies=tuple(pyproject.project.dependencies),
         runtime=load_runtime(pyproject.tool.aws_glue_toolkit.glue_version),
     )

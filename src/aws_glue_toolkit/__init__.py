@@ -1,4 +1,4 @@
-"""AWS Glue Toolkit — develop and package Python dependencies for Glue jobs.
+"""AWS Glue Toolkit — simplify the AWS Glue development lifecycle.
 
 Modules:
 
@@ -9,8 +9,13 @@ Modules:
 - :mod:`aws_glue_toolkit.pip` — ``pip`` resolution and wheel download
 - :mod:`aws_glue_toolkit.runtime` — bundled per-version Glue runtime pins
 
+Import submodules directly for library APIs (for example
+``from aws_glue_toolkit.job import load_pyproject``).
+
 """
 
 from importlib.metadata import version
+
+__all__ = ["__version__"]
 
 __version__ = version("aws-glue-toolkit")

@@ -50,15 +50,17 @@ def build_dependencies_zip(
     entry_script: Path,
     destination: Path,
 ) -> None:
-    """Create a ``.dependencies.zip`` at ``destination``.
+    """Create a dependencies zip at ``destination``.
 
     Zips every ``.py`` file under ``source_dir`` except ``entry_script``,
-    preserving paths relative to ``source_dir``.
+    preserving paths relative to ``source_dir``. Always writes
+    ``destination`` (the zip may be empty).
 
     Args:
         source_dir: Job Python source root.
         entry_script: Resolved entry script path under ``source_dir``.
-        destination: Final path for the ``.dependencies.zip`` file.
+        destination: Final path for the zip file (typically
+            ``{name}-{version}.dependencies.zip``).
 
     """
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -81,7 +83,8 @@ def _gluewheels_staging(destination: Path) -> Iterator[Path]:
     that root) and writes ``destination``.
 
     Args:
-        destination: Final path for the ``.gluewheels.zip`` file.
+        destination: Final path for the zip file (typically
+            ``{name}-{version}.gluewheels.zip``).
 
     Yields:
         Path to the ``wheels/`` subdirectory for population.
@@ -103,7 +106,7 @@ def build_gluewheels_zip(
     runtime: GlueRuntimeMetadata,
     destination: Path,
 ) -> None:
-    """Create a ``.gluewheels.zip`` at ``destination``.
+    """Create a gluewheels zip at ``destination``.
 
     1. **Resolve packages to bundle** — resolve ``requirements`` with Glue
        runtime pins as constraints; omit packages whose resolved version
@@ -112,10 +115,13 @@ def build_gluewheels_zip(
        download ``*.whl`` files, and zip the staging tree to
        ``destination``.
 
+    Always writes ``destination`` (the zip may be empty).
+
     Args:
         requirements: Direct dependency requirements (PEP 508 strings).
         runtime: Bundled Glue runtime metadata (constraints, Python, platform).
-        destination: Final path for the ``.gluewheels.zip`` file.
+        destination: Final path for the zip file (typically
+            ``{name}-{version}.gluewheels.zip``).
 
     Raises:
         :exc:`~aws_glue_toolkit.pip.PipError`: ``pip`` resolution or

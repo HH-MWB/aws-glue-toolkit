@@ -142,7 +142,7 @@ def load_pyproject(project_dir: Path) -> GlueJobProject:
         FileNotFoundError: No ``pyproject.toml`` in ``project_dir``.
         OSError: ``pyproject.toml`` exists but could not be read.
         TOMLDecodeError: TOML syntax error.
-        ValidationError: ``pyproject.toml`` failed schema validation.
+        pydantic.ValidationError: ``pyproject.toml`` failed schema validation.
         ValueError: ``source`` or ``script`` layout is invalid.
         UnsupportedGlueVersionError: No bundled metadata for
             ``tool.aws-glue-toolkit.glue_version``.

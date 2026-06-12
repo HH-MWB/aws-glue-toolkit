@@ -175,11 +175,8 @@ def gtk_command(
 def check(job: GlueJobProject) -> Panel:
     """Verify dependencies resolve for the job's Glue runtime.
 
-    Runs :func:`~aws_glue_toolkit.pip.resolve_packages` with
-    :attr:`~aws_glue_toolkit.job.GlueJobProject.runtime` pins, platform,
-    and Python version. Raises :exc:`GtkCommandError` with
-    :attr:`~GtkExitCode.DATAERR` when that call raises
-    :exc:`~aws_glue_toolkit.pip.PipError`.
+    Resolves job dependencies against bundled Glue runtime pins, platform,
+    and Python version.
     """
     try:
         resolve_packages(
@@ -205,10 +202,8 @@ def check(job: GlueJobProject) -> Panel:
 def build(job: GlueJobProject) -> Panel:
     """Build gluewheels and dependencies zips under the job directory.
 
-    Calls :func:`~aws_glue_toolkit.artifacts.build_gluewheels_zip` and
-    :func:`~aws_glue_toolkit.artifacts.build_dependencies_zip`. Raises
-    :exc:`GtkCommandError` with :attr:`~GtkExitCode.SOFTWARE` when either
-    builder raises :exc:`~aws_glue_toolkit.pip.PipError` or :exc:`OSError`.
+    Writes ``{name}-{version}.dependencies.zip`` and
+    ``{name}-{version}.gluewheels.zip``.
     """
     try:
         build_dependencies_zip(

@@ -38,6 +38,8 @@ __all__ = [
     "resolve_packages",
 ]
 
+# --- Exceptions ---
+
 
 class PipError(Exception):
     """``pip`` subprocess failed during resolution or download.
@@ -63,6 +65,9 @@ class PipError(Exception):
         self.stdout = stdout
         self.stderr = stderr
         super().__init__(message)
+
+
+# --- pip subprocess ---
 
 
 @contextmanager
@@ -116,7 +121,12 @@ def _pip_run(*args: str) -> None:
         ) from exc
 
 
+# --- Install report models ---
+
+
 class _InstallMetadata(BaseModel):
+    """``install[].metadata`` in a ``pip install --report`` JSON file."""
+
     model_config = ConfigDict(extra="ignore")
 
     name: str
@@ -124,15 +134,22 @@ class _InstallMetadata(BaseModel):
 
 
 class _InstallItem(BaseModel):
+    """Single ``install[]`` entry in a pip installation report."""
+
     model_config = ConfigDict(extra="ignore")
 
     metadata: _InstallMetadata
 
 
 class _InstallationReport(BaseModel):
+    """Top-level ``pip install --report`` JSON document."""
+
     model_config = ConfigDict(extra="ignore")
 
     install: list[_InstallItem]
+
+
+# --- Public API ---
 
 
 def resolve_packages(

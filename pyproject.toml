@@ -1,21 +1,31 @@
 [project]
 name = "aws-glue-toolkit"
-version = "0.0.0"
+version = "0.1.0"
 description = "A streamlined CLI utility designed to simplify the AWS Glue development lifecycle."
 readme = "README.md"
-authors = [
-    { name = "HH-MWB", email = "h.hong@mail.com" }
-]
+authors = [{ name = "HH-MWB", email = "h.hong@mail.com" }]
+license = "MIT"
 requires-python = ">=3.11"
 classifiers = [
-    "Development Status :: 1 - Planning",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
 ]
-dependencies = []
+dependencies = [
+    "pip>=22.2,<27",
+    "pydantic>=2,<3",
+    "cyclopts>=4,<5",
+]
+
+[project.urls]
+Repository = "https://github.com/HH-MWB/aws-glue-toolkit"
+PyPI = "https://pypi.org/project/aws-glue-toolkit/"
+
+[project.scripts]
+gtk = "aws_glue_toolkit.cli:app"
 
 [dependency-groups]
 dev = [
@@ -29,6 +39,7 @@ build-backend = "uv_build"
 [tool.mypy]
 python_version = "3.11"
 mypy_path = ["src"]
+plugins = ["pydantic.mypy"]
 explicit_package_bases = true
 strict = true
 disallow_any_generics = true
@@ -56,8 +67,16 @@ enable_error_code = [
     "unused-awaitable",
 ]
 
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+
 [tool.pylint.format]
 max-line-length = 79
+
+[tool.pylint.design]
+exclude-too-few-public-methods = ["pydantic.*"]
+max-statements = 10
 
 [tool.ruff]
 line-length = 79
@@ -70,6 +89,9 @@ ignore = [
     "D203", # Incompatible with D211 (no-blank-line-before-class)
     "D213", # Incompatible with D212 (multi-line-summary-first-line)
 ]
+
+[tool.ruff.lint.pylint]
+max-statements = 10
 
 [tool.ruff.lint.mccabe]
 max-complexity = 5

@@ -1,6 +1,6 @@
 [project]
 name = "aws-glue-toolkit"
-version = "0.1.0"
+version = "0.2.0"
 description = "A streamlined CLI utility designed to simplify the AWS Glue development lifecycle."
 readme = "README.md"
 authors = [{ name = "HH-MWB", email = "h.hong@mail.com" }]

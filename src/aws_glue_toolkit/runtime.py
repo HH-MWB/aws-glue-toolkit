@@ -9,6 +9,7 @@ Each supported Glue version has a JSON file shipped in the wheel at
 - ``table_formats`` — Hudi, Iceberg, and Delta Lake library versions
 - ``pip_platform`` — ``pip --platform`` tag for manylinux wheels
 - ``python_packages`` — preinstalled package name → version pins
+- ``docker_image`` — official AWS Glue local Docker image for this release
 
 Bundled JSON is validated before release.
 :func:`load_runtime` is the public entry point; it raises
@@ -99,6 +100,7 @@ class GlueRuntimeMetadata:
         pip_platform: ``pip --platform`` tag for manylinux wheels on Glue
             workers.
         python_packages: Preinstalled package name → version.
+        docker_image: Official AWS Glue local Docker image for this release.
 
     """
 
@@ -107,6 +109,7 @@ class GlueRuntimeMetadata:
     table_formats: GlueTableFormats
     pip_platform: str
     python_packages: Mapping[str, str]
+    docker_image: str
 
 
 # --- Load ---
@@ -152,4 +155,5 @@ def load_runtime(glue_version: str) -> GlueRuntimeMetadata:
         ),
         pip_platform=data["pip_platform"],
         python_packages=data["python_packages"],
+        docker_image=data["docker_image"],
     )

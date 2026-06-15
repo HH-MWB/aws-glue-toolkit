@@ -4,6 +4,7 @@ Commands:
 
 - ``check`` — resolve dependencies against bundled Glue runtime pins
 - ``build`` — write ``.gluewheels.zip`` and ``.dependencies.zip`` artifacts
+- ``run`` — execute the job in the official AWS Glue local Docker image
 
 Job commands are registered with :func:`gtk_command`. That decorator loads
 the job via :func:`_load_job_project`, passes the resulting
@@ -19,6 +20,7 @@ Example::
 
     gtk check ./my-glue-job
     gtk build ./my-glue-job
+    gtk run ./my-glue-job
 
 """
 
@@ -27,9 +29,9 @@ from __future__ import annotations
 from enum import IntEnum
 from pathlib import Path
 from tomllib import TOMLDecodeError
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Annotated, cast
 
-from cyclopts import App
+from cyclopts import App, Parameter
 from pydantic import ValidationError
 from pydantic.types import (
     DirectoryPath,  # noqa: TC002  # CLI coercion needs runtime type
@@ -39,6 +41,13 @@ from rich.panel import Panel
 from aws_glue_toolkit.artifacts import (
     build_dependencies_zip,
     build_gluewheels_zip,
+)
+from aws_glue_toolkit.docker import (
+    DockerError,
+    build_run_argv,
+    build_spark_submit_argv,
+    container_script_path,
+    run_container,
 )
 from aws_glue_toolkit.job import GlueJobProject, load_pyproject
 from aws_glue_toolkit.pip import PipError, resolve_packages
@@ -69,6 +78,7 @@ class GtkExitCode(IntEnum):
 
     DATAERR = 65  # unsatisfiable requirements
     NOINPUT = 66  # cannot read pyproject.toml
+    UNAVAILABLE = 69  # docker unavailable or launch failure
     SOFTWARE = 70  # wheel build pipeline failed
     CONFIG = 78  # invalid or unsupported job config
 
@@ -96,6 +106,17 @@ class GtkCommandError(Exception):
         self.exit_code = exit_code
         self.title = title
         self.message = message
+
+
+def _print_command_error(err: GtkCommandError) -> None:
+    """Render a :exc:`GtkCommandError` as a red Rich panel."""
+    app.error_console.print(
+        Panel(
+            err.message,
+            title=f"[bold red]{err.title}[/]",
+            border_style="red",
+        ),
+    )
 
 
 def _load_job_project(job_dir: Path) -> GlueJobProject:
@@ -150,13 +171,7 @@ def gtk_command(
         try:
             return fn(_load_job_project(job_dir))
         except GtkCommandError as err:
-            app.error_console.print(
-                Panel(
-                    err.message,
-                    title=f"[bold red]{err.title}[/]",
-                    border_style="red",
-                ),
-            )
+            _print_command_error(err)
             return err.exit_code
 
     wrapper.__name__ = fn.__name__
@@ -227,3 +242,44 @@ def build(job: GlueJobProject) -> Panel:
         title="[bold green]Build complete[/]",
         border_style="green",
     )
+
+
+@app.command
+def run(  # pylint: disable=keyword-arg-before-vararg,too-many-statements  # noqa: PLR0915
+    job_dir: DirectoryPath = Path(),
+    *job_args: Annotated[str, Parameter(allow_leading_hyphen=True)],
+) -> int:
+    """Run the job in the official AWS Glue local Docker image.
+
+    Passes ``--JOB_NAME`` from ``project.name`` unless overridden. Forwards
+    additional tokens after ``job_dir`` to ``spark-submit`` for
+    ``getResolvedOptions``. Container stdout and stderr pass through
+    unchanged.
+    """
+    try:
+        job = _load_job_project(job_dir)
+    except GtkCommandError as err:
+        _print_command_error(err)
+        return int(err.exit_code)
+    script_path = container_script_path(job.project_dir, job.script)
+    container_command = build_spark_submit_argv(
+        script_path,
+        job.name,
+        job_args,
+    )
+    argv = build_run_argv(
+        job.runtime.docker_image,
+        job.project_dir,
+        container_command,
+    )
+    try:
+        return run_container(argv)
+    except DockerError as err:
+        _print_command_error(
+            GtkCommandError(
+                GtkExitCode.UNAVAILABLE,
+                "Docker unavailable",
+                str(err),
+            ),
+        )
+        return int(GtkExitCode.UNAVAILABLE)

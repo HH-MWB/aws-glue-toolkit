@@ -4,7 +4,7 @@ A streamlined CLI utility designed to simplify the AWS Glue development lifecycl
 
 ## Installation
 
-Requires Python 3.11+. Installing the package adds the `gtk` command and a compatible `pip` release.
+Requires Python 3.11+ and [Docker](https://docs.docker.com/get-docker/) (for `gtk run`; assumed installed, never installed by `gtk`). Installing the package adds the `gtk` command and a compatible `pip` release.
 
 ```bash
 pip install aws-glue-toolkit
@@ -41,9 +41,10 @@ then run:
 cd my-glue-job
 gtk check .
 gtk build .
+gtk run .
 ```
 
-`check` validates dependencies. `build` writes deployment zips into the job directory.
+`check` validates dependencies. `build` writes deployment zips into the job directory. `run` executes the entry script in the official AWS Glue local Docker image via `spark-submit`, mounting the job directory at `/home/hadoop/workspace`. Tokens after the job directory are forwarded to the job (for example for `getResolvedOptions`). The container exit code is returned as the process exit code.
 
 ## Configuration
 
@@ -66,6 +67,7 @@ Each job is a directory containing `pyproject.toml`. Unknown keys are ignored. T
 | --- | --- |
 | check | `gtk check [JOB-DIR]` |
 | build | `gtk build [JOB-DIR]` |
+| run | `gtk run [JOB-DIR] [args...]` |
 
 ### check
 
@@ -82,6 +84,10 @@ Writes a dependencies zip and a gluewheels zip to the job directory:
 
 The gluewheels zip skips packages already pinned on the Glue image. Both zips are always written, even when empty.
 
+### run
+
+Runs the configured entry script with `spark-submit` inside the official AWS Glue local Docker image for `glue_version`. The job directory is mounted read-write at `/home/hadoop/workspace` with that path as the container working directory. `gtk` passes `--JOB_NAME` from `project.name` unless you supply your own `--JOB_NAME`. Any additional `--key value` tokens after `[JOB-DIR]` are forwarded to `spark-submit` and are available to the job via `getResolvedOptions` (give an explicit `[JOB-DIR]` when passing extra args from the default directory). Docker pulls the image on first use; `gtk` does not install Docker or pull images explicitly. Container stdout and stderr pass through unchanged. When Docker launches successfully, the process exit code is the container/`spark-submit` exit code.
+
 ### Exit codes
 
 On failure, `gtk` uses BSD `sysexits.h` codes:
@@ -90,6 +96,7 @@ On failure, `gtk` uses BSD `sysexits.h` codes:
 | --- | --- |
 | 65 | Dependencies unsatisfiable with Glue runtime pins |
 | 66 | `pyproject.toml` missing or unreadable |
+| 69 | Docker not available or could not be started |
 | 70 | Build pipeline failed |
 | 78 | Invalid `pyproject.toml`, job layout, or unsupported Glue version |
 

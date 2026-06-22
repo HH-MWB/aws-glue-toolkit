@@ -15,6 +15,8 @@ Schema rules (unknown keys ignored):
 - ``tool.aws-glue-toolkit.source`` — required; job Python source directory
 - ``tool.aws-glue-toolkit.script`` — required; entry script path under
   ``source``
+- ``tool.aws-glue-toolkit.tests`` — optional; defaults to
+  :data:`DEFAULT_TESTS_DIR`
 
 Example::
 
@@ -42,17 +44,19 @@ if TYPE_CHECKING:
 
 __all__ = [
     "DEFAULT_PACKAGE_VERSION",
+    "DEFAULT_TESTS_DIR",
     "GlueJobProject",
     "load_pyproject",
 ]
 
 DEFAULT_PACKAGE_VERSION: Final[str] = "0.0.0"
+DEFAULT_TESTS_DIR: Final[str] = "tests"
 
 # --- Resolved job config ---
 
 
 @dataclass(frozen=True, slots=True)
-class GlueJobProject:
+class GlueJobProject:  # pylint: disable=too-many-instance-attributes
     """Resolved Glue job configuration for ``pip``, ``artifacts``, and ``cli``.
 
     Built only by :func:`load_pyproject`.
@@ -65,6 +69,8 @@ class GlueJobProject:
         project_dir: Directory containing ``pyproject.toml``.
         source_dir: Resolved ``project_dir / source``.
         script: Resolved entry script path under :attr:`source_dir`.
+        tests_dir: Resolved ``project_dir / tests`` from
+            ``[tool.aws-glue-toolkit].tests``.
         dependencies: ``[project].dependencies`` as an immutable tuple.
         runtime: Bundled Glue runtime metadata for
             ``[tool.aws-glue-toolkit].glue_version``.
@@ -76,6 +82,7 @@ class GlueJobProject:
     project_dir: Path
     source_dir: Path
     script: Path
+    tests_dir: Path
     dependencies: tuple[str, ...]
     runtime: GlueRuntimeMetadata
 
@@ -111,6 +118,7 @@ class _AwsGlueToolkit(BaseModel):
     glue_version: str
     source: str
     script: str
+    tests: str = DEFAULT_TESTS_DIR
 
 
 class _Tool(BaseModel):
@@ -170,6 +178,7 @@ def load_pyproject(project_dir: Path) -> GlueJobProject:
         project_dir=project_dir,
         source_dir=source_dir,
         script=script_path,
+        tests_dir=project_dir / pyproject.tool.aws_glue_toolkit.tests,
         dependencies=tuple(pyproject.project.dependencies),
         runtime=load_runtime(pyproject.tool.aws_glue_toolkit.glue_version),
     )

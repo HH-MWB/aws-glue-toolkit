@@ -4,7 +4,7 @@ A streamlined CLI utility designed to simplify the AWS Glue development lifecycl
 
 ## Installation
 
-Requires Python 3.11+ and [Docker](https://docs.docker.com/get-docker/) (for `gtk run`; assumed installed, never installed by `gtk`). Installing the package adds the `gtk` command and a compatible `pip` release.
+Requires Python 3.11+ and [Docker](https://docs.docker.com/get-docker/) (for `gtk run` and `gtk test`; assumed installed, never installed by `gtk`). Installing the package adds the `gtk` command and a compatible `pip` release.
 
 ```bash
 pip install aws-glue-toolkit
@@ -19,6 +19,8 @@ my-glue-job/
   pyproject.toml
   src/
     __main__.py
+  tests/
+    test_example.py
 ```
 
 configure the job in `pyproject.toml`:
@@ -33,6 +35,7 @@ dependencies = ["pandas>=2"]
 glue_version = "5.1"
 source = "src"
 script = "__main__.py"
+tests = "tests"
 ```
 
 then run:
@@ -42,6 +45,7 @@ cd my-glue-job
 gtk check .
 gtk build .
 gtk run .
+gtk test .
 ```
 
 `check` validates dependencies. `build` writes deployment zips into the job directory. `run` executes the entry script in the official AWS Glue local Docker image via `spark-submit`, mounting the job directory at `/home/hadoop/workspace`. Tokens after the job directory are forwarded to the job (for example for `getResolvedOptions`). The container exit code is returned as the process exit code.
@@ -58,6 +62,7 @@ Each job is a directory containing `pyproject.toml`. Unknown keys are ignored. T
 | `tool.aws-glue-toolkit.glue_version` | yes | — | Glue release; bundled pins for `5.0` and `5.1` |
 | `tool.aws-glue-toolkit.source` | yes | — | Source directory, relative to the job root |
 | `tool.aws-glue-toolkit.script` | yes | — | Entry script, relative to `source` |
+| `tool.aws-glue-toolkit.tests` | no | `tests` | Test directory, relative to the job root |
 
 ## Commands
 
@@ -68,6 +73,7 @@ Each job is a directory containing `pyproject.toml`. Unknown keys are ignored. T
 | check | `gtk check [JOB-DIR]` |
 | build | `gtk build [JOB-DIR]` |
 | run | `gtk run [JOB-DIR] [args...]` |
+| test | `gtk test [JOB-DIR] [pytest args...]` |
 
 ### check
 
@@ -88,6 +94,10 @@ The gluewheels zip skips packages already pinned on the Glue image. Both zips ar
 
 Runs the configured entry script with `spark-submit` inside the official AWS Glue local Docker image for `glue_version`. The job directory is mounted read-write at `/home/hadoop/workspace` with that path as the container working directory. `gtk` passes `--JOB_NAME` from `project.name` unless you supply your own `--JOB_NAME`. Any additional `--key value` tokens after `[JOB-DIR]` are forwarded to `spark-submit` and are available to the job via `getResolvedOptions` (give an explicit `[JOB-DIR]` when passing extra args from the default directory). Docker pulls the image on first use; `gtk` does not install Docker or pull images explicitly. Container stdout and stderr pass through unchanged. When Docker launches successfully, the process exit code is the container/`spark-submit` exit code.
 
+### test
+
+Runs `python3 -m pytest` inside the official AWS Glue local Docker image for `glue_version`. The job directory is mounted read-write at `/home/hadoop/workspace` with that path as the container working directory. `gtk` sets `PYTHONPATH` to the configured `source` directory and, with no extra tokens, runs pytest against the configured `tests` directory (default `tests`). When the first forwarded token is a pytest option (starts with `-`), that directory is still passed before the options (for example `gtk test . -v` runs `tests` with verbose output). When the first forwarded token is a path, only those tokens are passed to pytest. Docker pulls the image on first use; `gtk` does not install Docker or pull images explicitly. Container stdout and stderr pass through unchanged. When Docker launches successfully, the process exit code is pytest's exit code (for example `1` when tests fail).
+
 ### Exit codes
 
 On failure, `gtk` uses BSD `sysexits.h` codes:
@@ -100,7 +110,7 @@ On failure, `gtk` uses BSD `sysexits.h` codes:
 | 70 | Build pipeline failed |
 | 78 | Invalid `pyproject.toml`, job layout, or unsupported Glue version |
 
-Success exits `0`. Unhandled errors exit `1`.
+Success exits `0`. Unhandled errors exit `1`. For `run` and `test`, when Docker launches successfully, the process exit code is the container command's exit code (not limited to the BSD codes above).
 
 ## License
 

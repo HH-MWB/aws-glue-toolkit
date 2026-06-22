@@ -5,6 +5,7 @@ Commands:
 - ``check`` — resolve dependencies against bundled Glue runtime pins
 - ``build`` — write ``.gluewheels.zip`` and ``.dependencies.zip`` artifacts
 - ``run`` — execute the job in the official AWS Glue local Docker image
+- ``test`` — run pytest in the official AWS Glue local Docker image
 
 Job commands are registered with :func:`gtk_command`. That decorator loads
 the job via :func:`_load_job_project`, passes the resulting
@@ -21,15 +22,25 @@ Example::
     gtk check ./my-glue-job
     gtk build ./my-glue-job
     gtk run ./my-glue-job
+    gtk test ./my-glue-job
 
 """
 
 from __future__ import annotations
 
 from enum import IntEnum
+from inspect import Parameter as InspectParameter
+from inspect import signature
 from pathlib import Path
 from tomllib import TOMLDecodeError
-from typing import TYPE_CHECKING, Annotated, cast
+from typing import (
+    TYPE_CHECKING,
+    Annotated,
+    TypeAlias,
+    Unpack,
+    cast,
+    overload,
+)
 
 from cyclopts import App, Parameter
 from pydantic import ValidationError
@@ -44,9 +55,9 @@ from aws_glue_toolkit.artifacts import (
 )
 from aws_glue_toolkit.docker import (
     DockerError,
+    build_pytest_argv,
     build_run_argv,
     build_spark_submit_argv,
-    container_script_path,
     run_container,
 )
 from aws_glue_toolkit.job import GlueJobProject, load_pyproject
@@ -54,7 +65,21 @@ from aws_glue_toolkit.pip import PipError, resolve_packages
 from aws_glue_toolkit.runtime import UnsupportedGlueVersionError
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
+
+    ForwardedArg: TypeAlias = Annotated[
+        str,
+        Parameter(allow_leading_hyphen=True),
+    ]
+    GtkPanelCommand: TypeAlias = Callable[[GlueJobProject], Panel]
+    GtkVarargsCommand: TypeAlias = Callable[
+        [GlueJobProject, Unpack[tuple[str, ...]]],
+        int,
+    ]
+    GtkForwardingWrapper: TypeAlias = Callable[
+        [DirectoryPath, Unpack[tuple[ForwardedArg, ...]]],
+        Panel | int,
+    ]
 
 __all__ = ["app"]
 
@@ -149,16 +174,96 @@ def _load_job_project(job_dir: Path) -> GlueJobProject:
         ) from None
 
 
+def _run_docker_command(
+    job: GlueJobProject,
+    container_command: Sequence[str],
+) -> int:
+    argv = build_run_argv(
+        job.runtime.docker_image,
+        job.project_dir,
+        container_command,
+    )
+    try:
+        return run_container(argv)
+    except DockerError as err:
+        _print_command_error(
+            GtkCommandError(
+                GtkExitCode.UNAVAILABLE,
+                "Docker unavailable",
+                str(err),
+            ),
+        )
+        return int(GtkExitCode.UNAVAILABLE)
+
+
+def _gtk_command_body(
+    fn: GtkPanelCommand | GtkVarargsCommand,
+    job_dir: DirectoryPath,
+    forwarded: tuple[str, ...],
+) -> Panel | int:
+    try:
+        job = _load_job_project(job_dir)
+        if forwarded:
+            return fn(job, *forwarded)
+        return fn(job)
+    except GtkCommandError as err:
+        _print_command_error(err)
+        return int(err.exit_code)
+
+
+def _register_simple_gtk_command(
+    fn: GtkPanelCommand,
+) -> Callable[[DirectoryPath], Panel | int]:
+    def wrapper(job_dir: DirectoryPath = Path()) -> Panel | int:
+        return _gtk_command_body(fn, job_dir, ())
+
+    wrapper.__name__ = fn.__name__
+    wrapper.__doc__ = fn.__doc__
+    return cast(
+        "Callable[[DirectoryPath], Panel | int]",
+        app.command(wrapper),
+    )
+
+
+def _register_forwarding_gtk_command(
+    fn: GtkVarargsCommand,
+) -> GtkForwardingWrapper:
+    def wrapper(  # pylint: disable=keyword-arg-before-vararg
+        job_dir: DirectoryPath = Path(),
+        *forwarded: Annotated[str, Parameter(allow_leading_hyphen=True)],
+    ) -> Panel | int:
+        return _gtk_command_body(fn, job_dir, forwarded)
+
+    wrapper.__name__ = fn.__name__
+    wrapper.__doc__ = fn.__doc__
+    return app.command(wrapper)
+
+
+@overload
 def gtk_command(
-    fn: Callable[[GlueJobProject], Panel],
-) -> Callable[[DirectoryPath], Panel | GtkExitCode]:
+    fn: GtkPanelCommand,
+) -> Callable[[DirectoryPath], Panel | int]: ...
+
+
+@overload
+def gtk_command(fn: GtkVarargsCommand) -> GtkForwardingWrapper: ...
+
+
+def gtk_command(
+    fn: GtkPanelCommand | GtkVarargsCommand,
+) -> Callable[[DirectoryPath], Panel | int] | GtkForwardingWrapper:
     """Register ``fn`` as a Cyclopts command with one ``job_dir`` argument.
 
     Loads the job via :func:`_load_job_project`, passes the resulting
-    :class:`~aws_glue_toolkit.job.GlueJobProject` to ``fn``,
-    and expects a success :class:`~rich.panel.Panel` return value (printed
-    by Cyclopts; exit ``0``). :exc:`GtkCommandError` (from pyproject load
-    or the command body) is rendered as a red Rich panel on
+    :class:`~aws_glue_toolkit.job.GlueJobProject` to ``fn``, and returns
+    its result. Inner functions without ``*varargs`` take only ``job``;
+    those with ``*varargs`` receive tokens forwarded from the CLI after
+    ``job_dir`` (via ``Parameter(allow_leading_hyphen=True)``).
+
+    Success :class:`~rich.panel.Panel` values are printed by Cyclopts (exit
+    ``0``); integer return values become the process exit code (for example
+    container or pytest status). :exc:`GtkCommandError` (from pyproject
+    load or the command body) is rendered as a red Rich panel on
     :attr:`~cyclopts.App.error_console` with the matching
     :class:`GtkExitCode`.
 
@@ -166,21 +271,13 @@ def gtk_command(
     ``functools.wraps``), so Cyclopts does not expose inner parameters
     (such as ``--job.name``) on the CLI.
     """
-
-    def wrapper(job_dir: DirectoryPath = Path()) -> Panel | GtkExitCode:
-        try:
-            return fn(_load_job_project(job_dir))
-        except GtkCommandError as err:
-            _print_command_error(err)
-            return err.exit_code
-
-    wrapper.__name__ = fn.__name__
-    wrapper.__doc__ = fn.__doc__
-
-    return cast(
-        "Callable[[DirectoryPath], Panel | GtkExitCode]",
-        app.command(wrapper),
+    has_varargs = any(
+        p.kind == InspectParameter.VAR_POSITIONAL
+        for p in signature(fn).parameters.values()
     )
+    if has_varargs:
+        return _register_forwarding_gtk_command(cast("GtkVarargsCommand", fn))
+    return _register_simple_gtk_command(cast("GtkPanelCommand", fn))
 
 
 # --- Commands ---
@@ -244,11 +341,8 @@ def build(job: GlueJobProject) -> Panel:
     )
 
 
-@app.command
-def run(  # pylint: disable=keyword-arg-before-vararg,too-many-statements  # noqa: PLR0915
-    job_dir: DirectoryPath = Path(),
-    *job_args: Annotated[str, Parameter(allow_leading_hyphen=True)],
-) -> int:
+@gtk_command
+def run(job: GlueJobProject, *job_args: str) -> int:
     """Run the job in the official AWS Glue local Docker image.
 
     Passes ``--JOB_NAME`` from ``project.name`` unless overridden. Forwards
@@ -256,30 +350,37 @@ def run(  # pylint: disable=keyword-arg-before-vararg,too-many-statements  # noq
     ``getResolvedOptions``. Container stdout and stderr pass through
     unchanged.
     """
-    try:
-        job = _load_job_project(job_dir)
-    except GtkCommandError as err:
-        _print_command_error(err)
-        return int(err.exit_code)
-    script_path = container_script_path(job.project_dir, job.script)
-    container_command = build_spark_submit_argv(
-        script_path,
-        job.name,
-        job_args,
+    return _run_docker_command(
+        job,
+        build_spark_submit_argv(
+            job.project_dir,
+            job.script,
+            job.name,
+            job_args,
+        ),
     )
-    argv = build_run_argv(
-        job.runtime.docker_image,
-        job.project_dir,
-        container_command,
-    )
-    try:
-        return run_container(argv)
-    except DockerError as err:
-        _print_command_error(
-            GtkCommandError(
-                GtkExitCode.UNAVAILABLE,
-                "Docker unavailable",
-                str(err),
-            ),
+
+
+@gtk_command
+def test(job: GlueJobProject, *pytest_args: str) -> int:
+    """Run pytest in the official AWS Glue local Docker image.
+
+    Uses ``tool.aws-glue-toolkit.tests`` and sets ``PYTHONPATH`` to
+    ``source``. Forwards additional tokens after ``job_dir`` to ``pytest``.
+    Container stdout and stderr pass through unchanged.
+    """
+    if not job.tests_dir.is_dir():
+        raise GtkCommandError(
+            GtkExitCode.CONFIG,
+            "Tests directory not found",
+            str(job.tests_dir),
         )
-        return int(GtkExitCode.UNAVAILABLE)
+    return _run_docker_command(
+        job,
+        build_pytest_argv(
+            job.project_dir,
+            job.source_dir,
+            job.tests_dir,
+            pytest_args,
+        ),
+    )

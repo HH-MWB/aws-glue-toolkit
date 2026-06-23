@@ -4,7 +4,7 @@ A streamlined CLI utility designed to simplify the AWS Glue development lifecycl
 
 ## Installation
 
-Requires Python 3.11+ and [Docker](https://docs.docker.com/get-docker/) (for `gtk run` and `gtk test`; assumed installed, never installed by `gtk`). Installing the package adds the `gtk` command and a compatible `pip` release.
+Requires Python 3.11+ and [Docker](https://docs.docker.com/get-docker/) (for all `gtk` commands; assumed installed, never installed by `gtk`). Installing the package adds the `gtk` command and a compatible `pip` release.
 
 ```bash
 pip install aws-glue-toolkit
@@ -48,7 +48,7 @@ gtk run .
 gtk test .
 ```
 
-`check` validates dependencies. `build` writes deployment zips into the job directory. `run` executes the entry script in the official AWS Glue local Docker image via `spark-submit`, mounting the job directory at `/home/hadoop/workspace`. Tokens after the job directory are forwarded to the job (for example for `getResolvedOptions`). The container exit code is returned as the process exit code.
+`check` validates dependencies inside the official AWS Glue local Docker image. `build` writes deployment zips into the job directory; wheel resolution and download run in the same image. `run` executes the entry script in that image via `spark-submit`, mounting the job directory at `/home/hadoop/workspace`. Tokens after the job directory are forwarded to the job (for example for `getResolvedOptions`). The container exit code is returned as the process exit code.
 
 ## Configuration
 
@@ -77,11 +77,11 @@ Each job is a directory containing `pyproject.toml`. Unknown keys are ignored. T
 
 ### check
 
-Resolves `project.dependencies` against the bundled runtime pins for `glue_version`. Uses the Glue worker Python version and platform tag from the bundled metadata. Does not write files.
+Resolves `project.dependencies` inside the official AWS Glue local Docker image for `glue_version`, against the bundled runtime pins. Uses the Glue worker Python version and platform tag from the bundled metadata. Does not write files. Docker pulls the image on first use; `gtk` does not install Docker or pull images explicitly.
 
 ### build
 
-Writes a dependencies zip and a gluewheels zip to the job directory:
+Writes a dependencies zip and a gluewheels zip to the job directory. The dependencies zip is assembled on the host from local `.py` files. The gluewheels zip resolves and downloads wheels inside the official AWS Glue local Docker image for `glue_version`. Docker pulls the image on first use; `gtk` does not install Docker or pull images explicitly.
 
 | File | Glue parameter | Contents |
 | --- | --- | --- |

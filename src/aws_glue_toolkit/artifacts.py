@@ -30,7 +30,11 @@ from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
 from zipfile import ZIP_DEFLATED, ZipFile
 
-from aws_glue_toolkit.pip import download_wheels, resolve_packages
+from aws_glue_toolkit.pip import (
+    PipExecutionContext,
+    download_wheels,
+    resolve_packages,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
@@ -105,6 +109,8 @@ def build_gluewheels_zip(
     requirements: Sequence[str],
     runtime: GlueRuntimeMetadata,
     destination: Path,
+    *,
+    execution: PipExecutionContext | None = None,
 ) -> None:
     """Create a gluewheels zip at ``destination``.
 
@@ -122,6 +128,7 @@ def build_gluewheels_zip(
         runtime: Bundled Glue runtime metadata (constraints, Python, platform).
         destination: Final path for the zip file (typically
             ``{name}-{version}.gluewheels.zip``).
+        execution: When set, run pip in the Glue Docker image.
 
     Raises:
         :exc:`~aws_glue_toolkit.pip.PipError`: ``pip`` resolution or
@@ -134,6 +141,7 @@ def build_gluewheels_zip(
         runtime.python_packages,
         python_version=runtime.core_engines.python,
         platform=runtime.pip_platform,
+        execution=execution,
     )
     packages = {
         name: version
@@ -155,4 +163,5 @@ def build_gluewheels_zip(
             wheels_dir,
             python_version=runtime.core_engines.python,
             platform=runtime.pip_platform,
+            execution=execution,
         )

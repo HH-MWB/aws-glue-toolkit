@@ -2,7 +2,7 @@
 
 Commands:
 
-- ``check`` — resolve dependencies against bundled Glue runtime pins
+- ``check`` — resolve dependencies in the official AWS Glue local Docker image
 - ``build`` — write ``.gluewheels.zip`` and ``.dependencies.zip`` artifacts
 - ``run`` — execute the job in the official AWS Glue local Docker image
 - ``test`` — run pytest in the official AWS Glue local Docker image
@@ -61,7 +61,11 @@ from aws_glue_toolkit.docker import (
     run_container,
 )
 from aws_glue_toolkit.job import GlueJobProject, load_pyproject
-from aws_glue_toolkit.pip import PipError, resolve_packages
+from aws_glue_toolkit.pip import (
+    PipError,
+    PipExecutionContext,
+    resolve_packages,
+)
 from aws_glue_toolkit.runtime import UnsupportedGlueVersionError
 
 if TYPE_CHECKING:
@@ -283,12 +287,20 @@ def gtk_command(
 # --- Commands ---
 
 
+def _pip_execution(job: GlueJobProject) -> PipExecutionContext:
+    """Return Docker pip context for the job's Glue runtime image."""
+    return PipExecutionContext(
+        job.runtime.docker_image,
+        job.project_dir,
+    )
+
+
 @gtk_command
 def check(job: GlueJobProject) -> Panel:
     """Verify dependencies resolve for the job's Glue runtime.
 
-    Resolves job dependencies against bundled Glue runtime pins, platform,
-    and Python version.
+    Resolves job dependencies inside the official AWS Glue local Docker
+    image against bundled Glue runtime pins, platform, and Python version.
     """
     try:
         resolve_packages(
@@ -296,7 +308,14 @@ def check(job: GlueJobProject) -> Panel:
             job.runtime.python_packages,
             python_version=job.runtime.core_engines.python,
             platform=job.runtime.pip_platform,
+            execution=_pip_execution(job),
         )
+    except DockerError as err:
+        raise GtkCommandError(
+            GtkExitCode.UNAVAILABLE,
+            "Docker unavailable",
+            str(err),
+        ) from None
     except PipError:
         raise GtkCommandError(
             GtkExitCode.DATAERR,
@@ -315,7 +334,8 @@ def build(job: GlueJobProject) -> Panel:
     """Build gluewheels and dependencies zips under the job directory.
 
     Writes ``{name}-{version}.dependencies.zip`` and
-    ``{name}-{version}.gluewheels.zip``.
+    ``{name}-{version}.gluewheels.zip``. Resolves and downloads wheels
+    inside the official AWS Glue local Docker image.
     """
     try:
         build_dependencies_zip(
@@ -327,7 +347,14 @@ def build(job: GlueJobProject) -> Panel:
             job.dependencies,
             job.runtime,
             job.project_dir / job.gluewheels_zip_filename,
+            execution=_pip_execution(job),
         )
+    except DockerError as err:
+        raise GtkCommandError(
+            GtkExitCode.UNAVAILABLE,
+            "Docker unavailable",
+            str(err),
+        ) from None
     except (OSError, PipError) as err:
         raise GtkCommandError(
             GtkExitCode.SOFTWARE,

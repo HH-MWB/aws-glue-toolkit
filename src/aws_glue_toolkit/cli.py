@@ -49,27 +49,14 @@ from pydantic.types import (
 )
 from rich.panel import Panel
 
-from aws_glue_toolkit.artifacts import (
-    build_dependencies_zip,
-    build_gluewheels_zip,
-)
-from aws_glue_toolkit.docker import (
-    DockerError,
-    build_pytest_argv,
-    build_run_argv,
-    build_spark_submit_argv,
-    run_container,
-)
+from aws_glue_toolkit import workflows
+from aws_glue_toolkit.docker import DockerError
 from aws_glue_toolkit.job import GlueJobProject, load_pyproject
-from aws_glue_toolkit.pip import (
-    PipError,
-    PipExecutionContext,
-    resolve_packages,
-)
+from aws_glue_toolkit.pip import PipError
 from aws_glue_toolkit.runtime import UnsupportedGlueVersionError
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable
 
     ForwardedArg: TypeAlias = Annotated[
         str,
@@ -178,26 +165,12 @@ def _load_job_project(job_dir: Path) -> GlueJobProject:
         ) from None
 
 
-def _run_docker_command(
-    job: GlueJobProject,
-    container_command: Sequence[str],
-) -> int:
-    argv = build_run_argv(
-        job.runtime.docker_image,
-        job.project_dir,
-        container_command,
+def _docker_unavailable(err: DockerError) -> GtkCommandError:
+    return GtkCommandError(
+        GtkExitCode.UNAVAILABLE,
+        "Docker unavailable",
+        str(err),
     )
-    try:
-        return run_container(argv)
-    except DockerError as err:
-        _print_command_error(
-            GtkCommandError(
-                GtkExitCode.UNAVAILABLE,
-                "Docker unavailable",
-                str(err),
-            ),
-        )
-        return int(GtkExitCode.UNAVAILABLE)
 
 
 def _gtk_command_body(
@@ -287,14 +260,6 @@ def gtk_command(
 # --- Commands ---
 
 
-def _pip_execution(job: GlueJobProject) -> PipExecutionContext:
-    """Return Docker pip context for the job's Glue runtime image."""
-    return PipExecutionContext(
-        job.runtime.docker_image,
-        job.project_dir,
-    )
-
-
 @gtk_command
 def check(job: GlueJobProject) -> Panel:
     """Verify dependencies resolve for the job's Glue runtime.
@@ -303,19 +268,9 @@ def check(job: GlueJobProject) -> Panel:
     image against bundled Glue runtime pins, platform, and Python version.
     """
     try:
-        resolve_packages(
-            job.dependencies,
-            job.runtime.python_packages,
-            python_version=job.runtime.core_engines.python,
-            platform=job.runtime.pip_platform,
-            execution=_pip_execution(job),
-        )
+        workflows.check(job)
     except DockerError as err:
-        raise GtkCommandError(
-            GtkExitCode.UNAVAILABLE,
-            "Docker unavailable",
-            str(err),
-        ) from None
+        raise _docker_unavailable(err) from None
     except PipError:
         raise GtkCommandError(
             GtkExitCode.DATAERR,
@@ -338,23 +293,9 @@ def build(job: GlueJobProject) -> Panel:
     inside the official AWS Glue local Docker image.
     """
     try:
-        build_dependencies_zip(
-            job.source_dir,
-            job.script,
-            job.project_dir / job.dependencies_zip_filename,
-        )
-        build_gluewheels_zip(
-            job.dependencies,
-            job.runtime,
-            job.project_dir / job.gluewheels_zip_filename,
-            execution=_pip_execution(job),
-        )
+        project_dir = workflows.build(job)
     except DockerError as err:
-        raise GtkCommandError(
-            GtkExitCode.UNAVAILABLE,
-            "Docker unavailable",
-            str(err),
-        ) from None
+        raise _docker_unavailable(err) from None
     except (OSError, PipError) as err:
         raise GtkCommandError(
             GtkExitCode.SOFTWARE,
@@ -362,7 +303,7 @@ def build(job: GlueJobProject) -> Panel:
             str(err),
         ) from None
     return Panel(
-        f"Wrote zip files to {job.project_dir}.",
+        f"Wrote zip files to {project_dir}.",
         title="[bold green]Build complete[/]",
         border_style="green",
     )
@@ -377,15 +318,11 @@ def run(job: GlueJobProject, *job_args: str) -> int:
     ``getResolvedOptions``. Container stdout and stderr pass through
     unchanged.
     """
-    return _run_docker_command(
-        job,
-        build_spark_submit_argv(
-            job.project_dir,
-            job.script,
-            job.name,
-            job_args,
-        ),
-    )
+    try:
+        return workflows.run(job, *job_args)
+    except DockerError as err:
+        _print_command_error(_docker_unavailable(err))
+        return int(GtkExitCode.UNAVAILABLE)
 
 
 @gtk_command
@@ -396,18 +333,14 @@ def test(job: GlueJobProject, *pytest_args: str) -> int:
     ``source``. Forwards additional tokens after ``job_dir`` to ``pytest``.
     Container stdout and stderr pass through unchanged.
     """
-    if not job.tests_dir.is_dir():
+    try:
+        return workflows.test(job, *pytest_args)
+    except ValueError as err:
         raise GtkCommandError(
             GtkExitCode.CONFIG,
             "Tests directory not found",
-            str(job.tests_dir),
-        )
-    return _run_docker_command(
-        job,
-        build_pytest_argv(
-            job.project_dir,
-            job.source_dir,
-            job.tests_dir,
-            pytest_args,
-        ),
-    )
+            str(err),
+        ) from None
+    except DockerError as err:
+        _print_command_error(_docker_unavailable(err))
+        return int(GtkExitCode.UNAVAILABLE)

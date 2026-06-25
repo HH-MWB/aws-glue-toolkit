@@ -7,6 +7,7 @@ subprocess shells.
 Public API: :func:`build_run_argv`, :func:`build_spark_submit_argv`,
 :func:`build_pytest_argv`, :func:`build_pip_argv`, :func:`run_container`,
 :func:`run_container_capture`, :func:`run_pip_in_container`,
+:func:`run_job`, :func:`run_tests`,
 :data:`PIP_WORK_MOUNT`, :data:`GLUEWHEELS_STAGING_MOUNT`, :exc:`DockerError`.
 
 Note:
@@ -27,6 +28,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from aws_glue_toolkit.job import GlueJobProject
+
 __all__ = [
     "GLUEWHEELS_STAGING_MOUNT",
     "PIP_WORK_MOUNT",
@@ -37,7 +40,9 @@ __all__ = [
     "build_spark_submit_argv",
     "run_container",
     "run_container_capture",
+    "run_job",
     "run_pip_in_container",
+    "run_tests",
 ]
 
 _WORKSPACE_MOUNT = "/home/hadoop/workspace"
@@ -258,3 +263,43 @@ def run_pip_in_container(
         extra_volumes=resolved_mounts,
     )
     return run_container_capture(argv)
+
+
+def run_job(job: GlueJobProject, *job_args: str) -> int:
+    """Run the job via ``spark-submit`` in the Glue Docker image."""
+    return run_container(
+        build_run_argv(
+            job.runtime.docker_image,
+            job.project_dir,
+            build_spark_submit_argv(
+                job.project_dir,
+                job.script,
+                job.name,
+                job_args,
+            ),
+        ),
+    )
+
+
+def run_tests(job: GlueJobProject, *pytest_args: str) -> int:
+    """Run pytest in the Glue Docker image.
+
+    Raises:
+        ValueError: Configured tests directory does not exist.
+
+    """
+    if not job.tests_dir.is_dir():
+        msg = f"tests directory not found: {job.tests_dir}"
+        raise ValueError(msg)
+    return run_container(
+        build_run_argv(
+            job.runtime.docker_image,
+            job.project_dir,
+            build_pytest_argv(
+                job.project_dir,
+                job.source_dir,
+                job.tests_dir,
+                pytest_args,
+            ),
+        ),
+    )

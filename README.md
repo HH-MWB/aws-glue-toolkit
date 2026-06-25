@@ -112,6 +112,11 @@ On failure, `gtk` uses BSD `sysexits.h` codes:
 
 Success exits `0`. Unhandled errors exit `1`. For `run` and `test`, when Docker launches successfully, the process exit code is the container command's exit code (not limited to the BSD codes above).
 
+## Architecture
+
+Layered module layout (core, application, shell) is documented in
+[docs/architecture.md](docs/architecture.md).
+
 ## License
 
 This project is licensed under the MIT License — see the [LICENSE](https://github.com/HH-MWB/aws-glue-toolkit/blob/main/LICENSE) file for details.

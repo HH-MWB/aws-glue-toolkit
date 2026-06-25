@@ -7,18 +7,18 @@ Two artifacts, two Glue job parameters:
   ``script``, preserving paths relative to ``source``.
 
 - ``{name}-{version}.gluewheels.zip`` — for ``--additional-python-modules``
-  (Glue 5.0+). Resolves job dependencies against bundled runtime pins,
-  downloads wheels, and bundles them per `AWS Glue Appendix A
+  (Glue 5.0+). Bundles a ``wheels/`` tree per `AWS Glue Appendix A
   <https://docs.aws.amazon.com/glue/latest/dg/aws-glue-programming-python-libraries.html>`_::
 
       wheels/
         requirements.txt   # resolved ``name==version`` pins
         *.whl
 
-Public API: :func:`build_dependencies_zip`, :func:`build_gluewheels_zip`.
+Public API: :func:`build_dependencies_zip`, :func:`stage_gluewheels_zip`,
+:func:`write_gluewheels_tree`.
 
-Both builders always write ``destination``, even when there is nothing to
-bundle.
+Orchestration (resolve, download, zip) lives in
+:mod:`aws_glue_toolkit.workflows`.
 
 """
 
@@ -30,20 +30,13 @@ from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
 from zipfile import ZIP_DEFLATED, ZipFile
 
-from aws_glue_toolkit.pip import (
-    PipExecutionContext,
-    download_wheels,
-    resolve_packages,
-)
-
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
-
-    from aws_glue_toolkit.runtime import GlueRuntimeMetadata
+    from collections.abc import Iterator, Mapping
 
 __all__ = [
     "build_dependencies_zip",
-    "build_gluewheels_zip",
+    "stage_gluewheels_zip",
+    "write_gluewheels_tree",
 ]
 
 # --- Dependencies zip ---
@@ -79,7 +72,7 @@ def build_dependencies_zip(
 
 
 @contextmanager
-def _gluewheels_staging(destination: Path) -> Iterator[Path]:
+def stage_gluewheels_zip(destination: Path) -> Iterator[Path]:
     """Stage ``wheels/`` in a temp directory; zip the tree on context exit.
 
     Creates ``<temp>/wheels/`` for population during assembly. After the
@@ -105,63 +98,14 @@ def _gluewheels_staging(destination: Path) -> Iterator[Path]:
                 archive.write(path, arcname=path.relative_to(staging_root))
 
 
-def build_gluewheels_zip(
-    requirements: Sequence[str],
-    runtime: GlueRuntimeMetadata,
-    destination: Path,
-    *,
-    execution: PipExecutionContext | None = None,
+def write_gluewheels_tree(
+    wheels_dir: Path,
+    packages: Mapping[str, str],
 ) -> None:
-    """Create a gluewheels zip at ``destination``.
-
-    1. **Resolve packages to bundle** — resolve ``requirements`` with Glue
-       runtime pins as constraints; omit packages whose resolved version
-       matches a built-in pin.
-    2. **Assemble gluewheels zip** — write ``wheels/requirements.txt``,
-       download ``*.whl`` files, and zip the staging tree to
-       ``destination``.
-
-    Always writes ``destination`` (the zip may be empty).
-
-    Args:
-        requirements: Direct dependency requirements (PEP 508 strings).
-        runtime: Bundled Glue runtime metadata (constraints, Python, platform).
-        destination: Final path for the zip file (typically
-            ``{name}-{version}.gluewheels.zip``).
-        execution: When set, run pip in the Glue Docker image.
-
-    Raises:
-        :exc:`~aws_glue_toolkit.pip.PipError`: ``pip`` resolution or
-        download failed.
-
-    """
-    # Resolve packages to bundle.
-    resolved = resolve_packages(
-        requirements,
-        runtime.python_packages,
-        python_version=runtime.core_engines.python,
-        platform=runtime.pip_platform,
-        execution=execution,
+    """Write ``wheels/requirements.txt`` from resolved package pins."""
+    (wheels_dir / "requirements.txt").write_text(
+        "\n".join(
+            f"{name}=={version}" for name, version in sorted(packages.items())
+        ),
+        encoding="utf-8",
     )
-    packages = {
-        name: version
-        for name, version in resolved.items()
-        if runtime.python_packages.get(name) != version
-    }
-
-    # Assemble gluewheels zip.
-    with _gluewheels_staging(destination) as wheels_dir:
-        (wheels_dir / "requirements.txt").write_text(
-            "\n".join(
-                f"{name}=={version}"
-                for name, version in sorted(packages.items())
-            ),
-            encoding="utf-8",
-        )
-        download_wheels(
-            packages,
-            wheels_dir,
-            python_version=runtime.core_engines.python,
-            platform=runtime.pip_platform,
-            execution=execution,
-        )

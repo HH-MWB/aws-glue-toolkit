@@ -16,13 +16,13 @@ Bundled JSON is validated before release.
 :exc:`UnsupportedGlueVersionError` when a version file is missing.
 :mod:`aws_glue_toolkit.job` calls it when loading ``pyproject.toml`` into
 :attr:`~aws_glue_toolkit.job.GlueJobProject.runtime`.
-:mod:`aws_glue_toolkit.workflows` and :mod:`aws_glue_toolkit.pip` consume
+:mod:`aws_glue_toolkit.app` and :mod:`aws_glue_toolkit.dependencies` consume
 :class:`GlueRuntimeMetadata` (or one loaded directly via
 :func:`load_runtime`).
 
-:mod:`aws_glue_toolkit.pip` uses the pins as constraints and
-:func:`~aws_glue_toolkit.pip.bundle_wheels` to omit packages already on the
-Glue image when building gluewheels.
+:mod:`aws_glue_toolkit.dependencies` uses the pins as constraints and
+:func:`~aws_glue_toolkit.dependencies.bundle_wheels` to omit image-pinned
+packages when building gluewheels.
 
 Example::
 
@@ -139,7 +139,7 @@ def load_runtime(glue_version: str) -> GlueRuntimeMetadata:
     if not resource.is_file():
         raise UnsupportedGlueVersionError(glue_version)
 
-    # Parse JSON and return frozen metadata.
+    # Parse JSON into frozen dataclasses.
     data = loads(resource.read_text(encoding="utf-8"))
     return GlueRuntimeMetadata(
         glue_version=data["glue_version"],

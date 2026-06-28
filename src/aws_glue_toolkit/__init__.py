@@ -2,16 +2,15 @@
 
 Modules:
 
+- :mod:`aws_glue_toolkit.app` — ``gtk`` check and build orchestration
 - :mod:`aws_glue_toolkit.artifacts` — Glue job zip artifact formats
 - :mod:`aws_glue_toolkit.cli` — ``gtk`` CLI (`check`, `build`, `run`, `test`)
-- :mod:`aws_glue_toolkit.workflows` — ``gtk`` use-case orchestration wired to
-  core and Docker
+- :mod:`aws_glue_toolkit.dependencies` — dependency prep and pip resolution
 - :mod:`aws_glue_toolkit.docker` — run jobs, tests, and pip in the AWS Glue
   local Docker image
 - :mod:`aws_glue_toolkit.job` — load job ``pyproject.toml`` and resolve
   Glue runtime into :class:`~aws_glue_toolkit.job.GlueJobProject`
-- :mod:`aws_glue_toolkit.requirements` — prepare PEP 508 deps for container pip
-- :mod:`aws_glue_toolkit.pip` — ``pip`` resolution and wheel bundling
+- :mod:`aws_glue_toolkit.paths` — container mount paths and path mapping
 - :mod:`aws_glue_toolkit.runtime` — bundled per-version Glue runtime pins
 
 See ``docs/architecture.md`` for the two-layer layout (core and shell).

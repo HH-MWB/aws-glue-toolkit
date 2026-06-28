@@ -50,11 +50,11 @@ from pydantic.types import (
 )
 from rich.panel import Panel
 
-from aws_glue_toolkit import workflows
-from aws_glue_toolkit.docker import DockerError
+from aws_glue_toolkit.app import build as build_job
+from aws_glue_toolkit.app import check as check_job
+from aws_glue_toolkit.dependencies import PipError, RequirementPreparationError
+from aws_glue_toolkit.docker import DockerError, run_job, run_tests
 from aws_glue_toolkit.job import GlueJobProject, load_pyproject
-from aws_glue_toolkit.pip import PipError
-from aws_glue_toolkit.requirements import RequirementPreparationError
 from aws_glue_toolkit.runtime import UnsupportedGlueVersionError
 
 if TYPE_CHECKING:
@@ -151,6 +151,7 @@ def _load_job_project(job_dir: Path) -> GlueJobProject:
     try:
         return load_pyproject(job_dir)
     except (FileNotFoundError, OSError) as err:
+        # Missing or unreadable pyproject.toml.
         raise GtkCommandError(
             GtkExitCode.NOINPUT,
             "Cannot read pyproject.toml",
@@ -162,6 +163,7 @@ def _load_job_project(job_dir: Path) -> GlueJobProject:
         ValueError,
         UnsupportedGlueVersionError,
     ) as err:
+        # Invalid TOML, schema, layout, or unsupported Glue version.
         raise GtkCommandError(
             GtkExitCode.CONFIG,
             "Invalid pyproject.toml",
@@ -170,6 +172,7 @@ def _load_job_project(job_dir: Path) -> GlueJobProject:
 
 
 def _docker_unavailable(err: DockerError) -> GtkCommandError:
+    """Map :exc:`DockerError` to a CLI failure panel."""
     return GtkCommandError(
         GtkExitCode.UNAVAILABLE,
         "Docker unavailable",
@@ -178,6 +181,7 @@ def _docker_unavailable(err: DockerError) -> GtkCommandError:
 
 
 def _invalid_dependency(err: RequirementPreparationError) -> GtkCommandError:
+    """Map :exc:`RequirementPreparationError` to a CLI failure panel."""
     return GtkCommandError(
         GtkExitCode.CONFIG,
         "Invalid dependency",
@@ -186,6 +190,7 @@ def _invalid_dependency(err: RequirementPreparationError) -> GtkCommandError:
 
 
 def _handle_dependency_errors(fn: Callable[[], T]) -> T:
+    """Run ``fn``; map Docker and dep prep errors to GtkCommandError."""
     try:
         return fn()
     except DockerError as err:
@@ -199,8 +204,10 @@ def _gtk_command_body(
     job_dir: DirectoryPath,
     forwarded: tuple[str, ...],
 ) -> Panel | int:
+    """Load the job, invoke ``fn``, and map GtkCommandError to exit codes."""
     try:
         job = _load_job_project(job_dir)
+
         if forwarded:
             return fn(job, *forwarded)
         return fn(job)
@@ -212,6 +219,8 @@ def _gtk_command_body(
 def _register_simple_gtk_command(
     fn: GtkPanelCommand,
 ) -> Callable[[DirectoryPath], Panel | int]:
+    """Register a Cyclopts command with only ``job_dir`` on the CLI."""
+
     def wrapper(job_dir: DirectoryPath = Path()) -> Panel | int:
         return _gtk_command_body(fn, job_dir, ())
 
@@ -226,6 +235,8 @@ def _register_simple_gtk_command(
 def _register_forwarding_gtk_command(
     fn: GtkVarargsCommand,
 ) -> GtkForwardingWrapper:
+    """Register a Cyclopts command that forwards trailing CLI tokens."""
+
     def wrapper(  # pylint: disable=keyword-arg-before-vararg
         job_dir: DirectoryPath = Path(),
         *forwarded: Annotated[str, Parameter(allow_leading_hyphen=True)],
@@ -268,6 +279,7 @@ def gtk_command(
     Copies ``__name__`` and ``__doc__`` from the inner function only (not
     ``functools.wraps``), so Cyclopts does not expose inner parameters
     (such as ``--job.name``) on the CLI.
+
     """
     has_varargs = any(
         p.kind == InspectParameter.VAR_POSITIONAL
@@ -288,9 +300,10 @@ def check(job: GlueJobProject) -> Panel:
     Resolves job dependencies inside the official AWS Glue local Docker
     image against bundled Glue runtime pins. Supports PyPI, ``file:`` path,
     and git/VCS direct references in ``project.dependencies``.
+
     """
     try:
-        _handle_dependency_errors(lambda: workflows.check(job))
+        _handle_dependency_errors(lambda: check_job(job))
     except PipError:
         raise GtkCommandError(
             GtkExitCode.DATAERR,
@@ -312,9 +325,10 @@ def build(job: GlueJobProject) -> Panel:
     ``{name}-{version}.gluewheels.zip``. Bundles wheels from PyPI, ``file:``
     path, and git/VCS dependencies inside the official AWS Glue local Docker
     image. Omits packages already pinned on the Glue image.
+
     """
     try:
-        project_dir = _handle_dependency_errors(lambda: workflows.build(job))
+        project_dir = _handle_dependency_errors(lambda: build_job(job))
     except (OSError, PipError) as err:
         raise GtkCommandError(
             GtkExitCode.SOFTWARE,
@@ -336,9 +350,10 @@ def run(job: GlueJobProject, *job_args: str) -> int:
     additional tokens after ``job_dir`` to ``spark-submit`` for
     ``getResolvedOptions``. Container stdout and stderr pass through
     unchanged.
+
     """
     try:
-        return workflows.run(job, *job_args)
+        return run_job(job, *job_args)
     except DockerError as err:
         _print_command_error(_docker_unavailable(err))
         return int(GtkExitCode.UNAVAILABLE)
@@ -351,9 +366,10 @@ def test(job: GlueJobProject, *pytest_args: str) -> int:
     Uses ``tool.aws-glue-toolkit.tests`` and sets ``PYTHONPATH`` to
     ``source``. Forwards additional tokens after ``job_dir`` to ``pytest``.
     Container stdout and stderr pass through unchanged.
+
     """
     try:
-        return workflows.test(job, *pytest_args)
+        return run_tests(job, *pytest_args)
     except ValueError as err:
         raise GtkCommandError(
             GtkExitCode.CONFIG,

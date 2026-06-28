@@ -18,7 +18,7 @@ Public API: :func:`build_dependencies_zip`, :func:`stage_gluewheels_zip`,
 :func:`write_gluewheels_tree`.
 
 Orchestration (prepare requirements, bundle wheels, zip) lives in
-:mod:`aws_glue_toolkit.workflows`.
+:mod:`aws_glue_toolkit.app`.
 
 """
 
@@ -57,10 +57,12 @@ def build_dependencies_zip(
         source_dir: Job Python source root.
         entry_script: Resolved entry script path under ``source_dir``.
         destination: Final path for the zip file (typically
-            ``{name}-{version}.dependencies.zip``).
+            ``{name}-{version}.dependencies.zip``). Its parent directory
+            must already exist (``gtk build`` writes under
+            :attr:`~aws_glue_toolkit.job.GlueJobProject.project_dir` after
+            :func:`~aws_glue_toolkit.job.load_pyproject`).
 
     """
-    destination.parent.mkdir(parents=True, exist_ok=True)
     with ZipFile(destination, "w", compression=ZIP_DEFLATED) as archive:
         for path in source_dir.rglob("*.py"):
             if path == entry_script:
@@ -81,18 +83,23 @@ def stage_gluewheels_zip(destination: Path) -> Iterator[Path]:
 
     Args:
         destination: Final path for the zip file (typically
-            ``{name}-{version}.gluewheels.zip``).
+            ``{name}-{version}.gluewheels.zip``). Its parent directory
+            must already exist (``gtk build`` writes under
+            :attr:`~aws_glue_toolkit.job.GlueJobProject.project_dir` after
+            :func:`~aws_glue_toolkit.job.load_pyproject`).
 
     Yields:
-        Path to the ``wheels/`` subdirectory for population.
+        Path to the ``wheels/`` subdirectory (created before yield).
 
     """
     with TemporaryDirectory() as tmp:
         staging_root = Path(tmp)
         wheels_dir = staging_root / "wheels"
         wheels_dir.mkdir()
+
         yield wheels_dir
-        destination.parent.mkdir(parents=True, exist_ok=True)
+
+        # Zip the staged tree on context exit.
         with ZipFile(destination, "w", compression=ZIP_DEFLATED) as archive:
             for path in (p for p in staging_root.rglob("*") if p.is_file()):
                 archive.write(path, arcname=path.relative_to(staging_root))
@@ -102,7 +109,14 @@ def write_gluewheels_tree(
     wheels_dir: Path,
     packages: Mapping[str, str],
 ) -> None:
-    """Write ``wheels/requirements.txt`` from resolved package pins."""
+    """Write ``wheels/requirements.txt`` from resolved package pins.
+
+    Args:
+        wheels_dir: Staging ``wheels/`` directory from
+            :func:`stage_gluewheels_zip`.
+        packages: Resolved package name → version pins to record.
+
+    """
     (wheels_dir / "requirements.txt").write_text(
         "\n".join(
             f"{name}=={version}" for name, version in sorted(packages.items())

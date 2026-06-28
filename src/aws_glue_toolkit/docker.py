@@ -7,8 +7,12 @@ subprocess shells.
 Public API: :func:`build_run_argv`, :func:`build_spark_submit_argv`,
 :func:`build_pytest_argv`, :func:`build_pip_argv`, :func:`run_container`,
 :func:`run_container_capture`, :func:`run_pip_in_container`,
-:func:`run_job`, :func:`run_tests`,
-:data:`PIP_WORK_MOUNT`, :data:`GLUEWHEELS_STAGING_MOUNT`, :exc:`DockerError`.
+:func:`run_job`, :func:`run_tests`, :func:`pip_runner`,
+:exc:`DockerError`.
+
+Mount constants :data:`~aws_glue_toolkit.paths.PIP_WORK_MOUNT` and
+:data:`~aws_glue_toolkit.paths.GLUEWHEELS_STAGING_MOUNT` are re-exported
+from :mod:`aws_glue_toolkit.paths` for backward compatibility.
 
 Note:
     ``# nosec B404`` — reviewed ``subprocess`` import; used only in
@@ -18,15 +22,24 @@ Note:
 
 from __future__ import annotations
 
-from pathlib import Path
 from shlex import join as shlex_join
 from shlex import quote as shlex_quote
 from shutil import which
 from subprocess import CompletedProcess, run  # nosec B404
 from typing import TYPE_CHECKING
 
+from aws_glue_toolkit.dependencies import PipRunner, pip_error_from_returncode
+from aws_glue_toolkit.paths import (
+    GLUEWHEELS_STAGING_MOUNT,
+    PIP_WORK_MOUNT,
+    WORKSPACE_MOUNT,
+    project_path,
+    rewrite_path_arg,
+)
+
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from pathlib import Path
 
     from aws_glue_toolkit.job import GlueJobProject
 
@@ -38,6 +51,7 @@ __all__ = [
     "build_pytest_argv",
     "build_run_argv",
     "build_spark_submit_argv",
+    "pip_runner",
     "run_container",
     "run_container_capture",
     "run_job",
@@ -45,10 +59,7 @@ __all__ = [
     "run_tests",
 ]
 
-_WORKSPACE_MOUNT = "/home/hadoop/workspace"
 _DOCKER_PLATFORM = "linux/amd64"
-PIP_WORK_MOUNT = "/tmp/gtk-pip-work"  # noqa: S108  # nosec B108
-GLUEWHEELS_STAGING_MOUNT = "/tmp/gtk-staging"  # noqa: S108  # nosec B108
 
 
 # --- Exceptions ---
@@ -61,52 +72,6 @@ class DockerError(Exception):
 # --- Pure builders ---
 
 
-def _container_project_path(project_dir: Path, path: Path) -> str:
-    """Return the container path for ``path`` under the workspace mount."""
-    rel = path.relative_to(project_dir)
-    return f"{_WORKSPACE_MOUNT}/{rel.as_posix()}"
-
-
-def _container_path_for_mount(
-    resolved: Path,
-    host_mount: Path,
-    container_mount: str,
-) -> str | None:
-    try:
-        rel = resolved.relative_to(host_mount.resolve())
-    except ValueError:
-        return None
-    suffix = rel.as_posix()
-    if suffix:
-        return f"{container_mount}/{suffix}"
-    return container_mount
-
-
-def _rewrite_pip_arg(
-    arg: str,
-    volume_mounts: Sequence[tuple[Path, str]],
-) -> str:
-    """Map a host path argument to its container mount path, if applicable."""
-    try:
-        resolved = Path(arg).resolve()
-    except (OSError, ValueError):
-        return arg
-    mounts = sorted(
-        volume_mounts,
-        key=lambda item: len(str(item[0].resolve())),
-        reverse=True,
-    )
-    for host_mount, container_mount in mounts:
-        mapped = _container_path_for_mount(
-            resolved,
-            host_mount,
-            container_mount,
-        )
-        if mapped is not None:
-            return mapped
-    return arg
-
-
 def build_spark_submit_argv(
     project_dir: Path,
     script: Path,
@@ -114,7 +79,9 @@ def build_spark_submit_argv(
     job_args: Sequence[str],
 ) -> list[str]:
     """Build ``spark-submit`` tokens for a Glue job inside the container."""
-    script_path = _container_project_path(project_dir, script)
+    script_path = project_path(project_dir, script)
+
+    # Inject --JOB_NAME unless the caller already set it.
     if any(
         token == "--JOB_NAME"  # noqa: S105  # nosec B105
         or token.startswith("--JOB_NAME=")
@@ -123,6 +90,7 @@ def build_spark_submit_argv(
         args = list(job_args)
     else:
         args = ["--JOB_NAME", job_name, *job_args]
+
     return ["spark-submit", script_path, *args]
 
 
@@ -133,13 +101,16 @@ def build_pytest_argv(
     pytest_args: Sequence[str],
 ) -> list[str]:
     """Build ``-c`` tokens to run ``pytest`` in the Glue image entrypoint."""
-    source_mount = _container_project_path(project_dir, source_dir)
+    source_mount = project_path(project_dir, source_dir)
     tests_path = tests_dir.relative_to(project_dir).as_posix()
+
+    # Default to the configured tests directory when no path target is given.
     targets = (
         pytest_args
         if pytest_args and not pytest_args[0].startswith("-")
         else [tests_path, *pytest_args]
     )
+
     cmd = (
         f"export PYTHONPATH={shlex_quote(source_mount)}:$PYTHONPATH; "
         f"python3 -m pytest {shlex_join(targets)}"
@@ -162,6 +133,8 @@ def build_run_argv(
 ) -> list[str]:
     """Build a ``docker run`` argv list for one Glue local container."""
     host_dir = project_dir.resolve()
+
+    # Base run flags and workspace bind mount.
     argv = [
         "docker",
         "run",
@@ -170,16 +143,19 @@ def build_run_argv(
         "--platform",
         _DOCKER_PLATFORM,
         "-v",
-        f"{host_dir}:{_WORKSPACE_MOUNT}/",
+        f"{host_dir}:{WORKSPACE_MOUNT}/",
     ]
+
+    # Additional host→container binds (pip work, staging, file: deps).
     for host_path, container_path in extra_volumes:
         argv.extend(
             ["-v", f"{host_path.resolve()}:{container_path}"],
         )
+
     argv.extend(
         [
             "--workdir",
-            _WORKSPACE_MOUNT,
+            WORKSPACE_MOUNT,
             image,
             *container_command,
         ],
@@ -201,6 +177,12 @@ def run_container(argv: Sequence[str]) -> int:
 
     Container stdout and stderr pass through unchanged.
 
+    Args:
+        argv: Full ``docker run …`` argv list from :func:`build_run_argv`.
+
+    Returns:
+        Container process exit code.
+
     Raises:
         DockerError: ``docker`` is not on ``PATH`` or could not be started.
 
@@ -208,7 +190,7 @@ def run_container(argv: Sequence[str]) -> int:
     _ensure_docker_available()
     try:
         return run(  # noqa: S603
-            list(argv),
+            argv,
             check=False,
         ).returncode  # nosec B603
     except OSError as exc:
@@ -218,6 +200,12 @@ def run_container(argv: Sequence[str]) -> int:
 def run_container_capture(argv: Sequence[str]) -> CompletedProcess[str]:
     """Run ``docker`` and capture stdout and stderr.
 
+    Args:
+        argv: Full ``docker run …`` argv list from :func:`build_run_argv`.
+
+    Returns:
+        Completed subprocess result with captured stdout and stderr.
+
     Raises:
         DockerError: ``docker`` is not on ``PATH`` or could not be started.
 
@@ -225,7 +213,7 @@ def run_container_capture(argv: Sequence[str]) -> CompletedProcess[str]:
     _ensure_docker_available()
     try:
         return run(  # noqa: S603
-            list(argv),
+            argv,
             check=False,
             capture_output=True,
             text=True,
@@ -247,6 +235,17 @@ def run_pip_in_container(
     Rewrites absolute host paths in ``pip_args`` that fall under
     ``volume_mounts`` to their container paths.
 
+    Args:
+        image: Glue local Docker image reference.
+        project_dir: Job root directory mounted at
+            :data:`~aws_glue_toolkit.paths.WORKSPACE_MOUNT`.
+        pip_args: Arguments passed to ``python3 -m pip``.
+        volume_mounts: Extra ``(host_path, container_mount)`` pairs for
+            this run.
+
+    Returns:
+        Completed subprocess result with captured stdout and stderr.
+
     Raises:
         DockerError: ``docker`` is not on ``PATH`` or could not be started.
 
@@ -255,7 +254,10 @@ def run_pip_in_container(
         (host_path.resolve(), container_path)
         for host_path, container_path in volume_mounts
     ]
-    mapped_args = [_rewrite_pip_arg(arg, resolved_mounts) for arg in pip_args]
+
+    # Map host paths in pip argv to container mount paths.
+    mapped_args = [rewrite_path_arg(arg, resolved_mounts) for arg in pip_args]
+
     argv = build_run_argv(
         image,
         project_dir,
@@ -265,8 +267,43 @@ def run_pip_in_container(
     return run_container_capture(argv)
 
 
+def pip_runner(job: GlueJobProject) -> PipRunner:
+    """Return a :class:`~aws_glue_toolkit.dependencies.PipRunner`."""
+
+    def execute_pip(
+        args: Sequence[str],
+        volume_mounts: Sequence[tuple[Path, str]],
+    ) -> None:
+        result = run_pip_in_container(
+            job.runtime.docker_image,
+            job.project_dir,
+            args,
+            volume_mounts=volume_mounts,
+        )
+
+        # Translate non-zero pip exit codes to PipError.
+        if result.returncode != 0:
+            raise pip_error_from_returncode(
+                result.returncode,
+                stdout=result.stdout,
+                stderr=result.stderr,
+            )
+
+    return execute_pip
+
+
 def run_job(job: GlueJobProject, *job_args: str) -> int:
-    """Run the job via ``spark-submit`` in the Glue Docker image."""
+    """Run the job via ``spark-submit`` in the Glue Docker image.
+
+    Args:
+        job: Resolved job config from
+            :func:`~aws_glue_toolkit.job.load_pyproject`.
+        *job_args: Tokens forwarded to ``spark-submit`` after ``--JOB_NAME``.
+
+    Returns:
+        Container exit code.
+
+    """
     return run_container(
         build_run_argv(
             job.runtime.docker_image,
@@ -283,6 +320,14 @@ def run_job(job: GlueJobProject, *job_args: str) -> int:
 
 def run_tests(job: GlueJobProject, *pytest_args: str) -> int:
     """Run pytest in the Glue Docker image.
+
+    Args:
+        job: Resolved job config from
+            :func:`~aws_glue_toolkit.job.load_pyproject`.
+        *pytest_args: Tokens forwarded to ``pytest``.
+
+    Returns:
+        Container exit code.
 
     Raises:
         ValueError: Configured tests directory does not exist.

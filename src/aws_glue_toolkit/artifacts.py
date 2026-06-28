@@ -17,7 +17,7 @@ Two artifacts, two Glue job parameters:
 Public API: :func:`build_dependencies_zip`, :func:`stage_gluewheels_zip`,
 :func:`write_gluewheels_tree`.
 
-Orchestration (resolve, download, zip) lives in
+Orchestration (prepare requirements, bundle wheels, zip) lives in
 :mod:`aws_glue_toolkit.workflows`.
 
 """

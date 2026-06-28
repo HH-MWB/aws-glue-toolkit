@@ -26,12 +26,13 @@ from aws_glue_toolkit.docker import (
     run_tests,
 )
 from aws_glue_toolkit.pip import (
+    PipInContainerConfig,
     PipRunner,
-    download_wheels,
+    bundle_wheels,
     pip_error_from_returncode,
     resolve_packages,
-    resolve_packages_to_bundle,
 )
+from aws_glue_toolkit.requirements import prepare_requirements
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -70,33 +71,26 @@ def _docker_pip_runner(job: GlueJobProject) -> PipRunner:
     return execute_pip
 
 
-def _resolve_in_docker(job: GlueJobProject) -> dict[str, str]:
-    return resolve_packages(
-        job.dependencies,
-        job.runtime,
+def _pip_container_config(job: GlueJobProject) -> PipInContainerConfig:
+    return PipInContainerConfig(
         runner=_docker_pip_runner(job),
         pip_work_mount=PIP_WORK_MOUNT,
+        gluewheels_staging_mount=GLUEWHEELS_STAGING_MOUNT,
     )
 
 
 def _build_gluewheels_zip(job: GlueJobProject) -> None:
-    runner = _docker_pip_runner(job)
-    packages = resolve_packages_to_bundle(
-        job.dependencies,
-        job.runtime,
-        runner=runner,
-        pip_work_mount=PIP_WORK_MOUNT,
-    )
+    prepared = prepare_requirements(job.dependencies, job.project_dir)
+    container = _pip_container_config(job)
     destination = job.project_dir / job.gluewheels_zip_filename
     with stage_gluewheels_zip(destination) as wheels_dir:
-        write_gluewheels_tree(wheels_dir, packages)
-        download_wheels(
-            packages,
-            wheels_dir,
+        packages = bundle_wheels(
+            prepared,
             job.runtime,
-            runner=runner,
-            gluewheels_staging_mount=GLUEWHEELS_STAGING_MOUNT,
+            wheels_dir,
+            container=container,
         )
+        write_gluewheels_tree(wheels_dir, packages)
 
 
 def check(job: GlueJobProject) -> None:
@@ -104,9 +98,15 @@ def check(job: GlueJobProject) -> None:
 
     Raises:
         PipError: Requirements are unsatisfiable.
+        RequirementPreparationError: A dependency spec could not be prepared.
 
     """
-    _resolve_in_docker(job)
+    prepared = prepare_requirements(job.dependencies, job.project_dir)
+    resolve_packages(
+        prepared,
+        job.runtime,
+        container=_pip_container_config(job),
+    )
 
 
 def build(job: GlueJobProject) -> Path:
@@ -117,7 +117,8 @@ def build(job: GlueJobProject) -> Path:
 
     Raises:
         OSError: Host zip I/O failed.
-        PipError: Wheel resolution or download failed.
+        PipError: Wheel resolution or bundling failed.
+        RequirementPreparationError: A dependency spec could not be prepared.
 
     """
     build_dependencies_zip(

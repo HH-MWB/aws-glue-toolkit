@@ -10,7 +10,8 @@ Modules:
   local Docker image
 - :mod:`aws_glue_toolkit.job` — load job ``pyproject.toml`` and resolve
   Glue runtime into :class:`~aws_glue_toolkit.job.GlueJobProject`
-- :mod:`aws_glue_toolkit.pip` — ``pip`` resolution and wheel download
+- :mod:`aws_glue_toolkit.requirements` — prepare PEP 508 deps for container pip
+- :mod:`aws_glue_toolkit.pip` — ``pip`` resolution and wheel bundling
 - :mod:`aws_glue_toolkit.runtime` — bundled per-version Glue runtime pins
 
 See ``docs/architecture.md`` for the two-layer layout (core and shell).

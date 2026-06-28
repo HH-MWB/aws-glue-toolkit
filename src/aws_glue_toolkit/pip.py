@@ -1,13 +1,12 @@
-"""Run ``pip`` for Glue job dependency check and wheel download.
+"""Run ``pip`` for Glue job dependency check and wheel bundling.
 
 Requires ``pip>=22.2`` (see ``pyproject.toml``) for ``--dry-run --report``.
 
 Pass a :class:`PipRunner` from :mod:`aws_glue_toolkit.workflows` to run pip
 inside the official Glue local Docker image; omit ``runner`` to use host pip.
 
-Public API: :class:`PipExecutionContext`, :class:`PipRunner`,
-:func:`packages_not_on_image`, :func:`resolve_packages`,
-:func:`resolve_packages_to_bundle`, :func:`download_wheels`, :exc:`PipError`.
+Public API: :class:`PipInContainerConfig`, :class:`PipRunner`,
+:func:`resolve_packages`, :func:`bundle_wheels`, :exc:`PipError`.
 
 Note:
     ``# nosec B404`` — reviewed ``subprocess`` import; used only in
@@ -27,43 +26,35 @@ from subprocess import CalledProcessError, run  # nosec B404
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
 
+from packaging.utils import parse_wheel_filename
 from pydantic import BaseModel, ConfigDict
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from aws_glue_toolkit.requirements import PreparedRequirements
     from aws_glue_toolkit.runtime import GlueRuntimeMetadata
 
 PipRunner = Callable[[Sequence[str], Sequence[tuple[Path, str]]], None]
 
 __all__ = [
     "PipError",
-    "PipExecutionContext",
+    "PipInContainerConfig",
     "PipRunner",
-    "download_wheels",
-    "packages_not_on_image",
+    "bundle_wheels",
     "pip_error_from_returncode",
     "resolve_packages",
-    "resolve_packages_to_bundle",
 ]
 
-
-# --- Execution context ---
-
-
-@dataclass(frozen=True, slots=True)
-class PipExecutionContext:
-    """Glue Docker image and job directory for pip-in-container execution."""
-
-    docker_image: str
-    project_dir: Path
+_PIP_WORK_MOUNT = "/tmp/gtk-pip-work"  # noqa: S108  # nosec B108
+_GLUEWHEELS_STAGING_MOUNT = "/tmp/gtk-staging"  # noqa: S108  # nosec B108
 
 
 # --- Exceptions ---
 
 
 class PipError(Exception):
-    """``pip`` subprocess failed during resolution or download.
+    """``pip`` subprocess failed during resolution or wheel bundling.
 
     Attributes:
         returncode: Subprocess exit code, if the failure came from pip.
@@ -115,7 +106,7 @@ def _pip_workspace(
     requirement_specs: Sequence[str],
     runtime_package_pins: Mapping[str, str],
 ) -> Iterator[Path]:
-    """Provide a temporary directory prepared for ``pip`` resolution."""
+    """Provide a temporary directory prepared for ``pip``."""
     with TemporaryDirectory() as tmp:
         work = Path(tmp)
         (work / "requirements.in").write_text(
@@ -167,6 +158,64 @@ def _pip_run(
     runner(args, volume_mounts)
 
 
+def _volume_mounts_for(
+    work: Path,
+    pip_work_mount: str,
+    prepared: PreparedRequirements,
+    *,
+    staging_parent: Path | None = None,
+    gluewheels_staging_mount: str | None = None,
+) -> list[tuple[Path, str]]:
+    mounts: list[tuple[Path, str]] = [(work, pip_work_mount)]
+    if staging_parent is not None and gluewheels_staging_mount is not None:
+        mounts.append((staging_parent, gluewheels_staging_mount))
+    mounts.extend(prepared.extra_mounts)
+    return mounts
+
+
+def _dry_run_args(
+    work: Path,
+    runtime: GlueRuntimeMetadata,
+    *,
+    runner: PipRunner | None,
+) -> list[str]:
+    args = [
+        "install",
+        "--requirement",
+        str(work / "requirements.in"),
+        "--constraint",
+        str(work / "constraints.txt"),
+        "--dry-run",
+        "--ignore-installed",
+        "--quiet",
+        "--report",
+        str(work / "report.json"),
+    ]
+    if runner is None:
+        python_version = runtime.core_engines.python
+        args.extend(
+            [
+                "--platform",
+                runtime.pip_platform,
+                "--python-version",
+                python_version.replace(".", ""),
+            ],
+        )
+    return args
+
+
+def _container_settings(
+    container: PipInContainerConfig | None,
+) -> tuple[PipRunner | None, str, str]:
+    if container is None:
+        return None, _PIP_WORK_MOUNT, _GLUEWHEELS_STAGING_MOUNT
+    return (
+        container.runner,
+        container.pip_work_mount,
+        container.gluewheels_staging_mount,
+    )
+
+
 # --- Install report models ---
 
 
@@ -198,36 +247,27 @@ class _InstallationReport(BaseModel):
 # --- Public API ---
 
 
-def packages_not_on_image(
-    resolved: Mapping[str, str],
-    runtime_pins: Mapping[str, str],
-) -> dict[str, str]:
-    """Return resolved packages whose version differs from Glue image pins."""
-    return {
-        name: version
-        for name, version in resolved.items()
-        if runtime_pins.get(name) != version
-    }
+@dataclass(frozen=True, slots=True)
+class PipInContainerConfig:
+    """Paths and runner for pip inside the Glue Docker image."""
+
+    runner: PipRunner
+    pip_work_mount: str = _PIP_WORK_MOUNT
+    gluewheels_staging_mount: str = _GLUEWHEELS_STAGING_MOUNT
 
 
 def resolve_packages(
-    requirement_specs: Sequence[str],
+    prepared: PreparedRequirements,
     runtime: GlueRuntimeMetadata,
     *,
-    runner: PipRunner | None = None,
-    pip_work_mount: str = "/tmp/gtk-pip-work",  # noqa: S108  # nosec B108
+    container: PipInContainerConfig | None = None,
 ) -> dict[str, str]:
     """Run ``pip install --dry-run --report`` and return resolved packages.
 
-    Writes a temp ``requirements.in`` and ``constraints.txt``, then parses
-    ``install[].metadata`` from pip's installation report JSON.
-
     Args:
-        requirement_specs: Direct dependency requirements (PEP 508 strings).
+        prepared: Rewritten requirements and extra Docker mounts.
         runtime: Bundled Glue runtime metadata (pins, Python, platform).
-        runner: When set, invoke pip via this callback (for example in Docker).
-        pip_work_mount: Container path for the pip work directory when
-            ``runner`` is set; must match :mod:`aws_glue_toolkit.docker`.
+        container: When set, invoke pip via Docker using these mount paths.
 
     Returns:
         Resolved packages (``name`` → ``version``).
@@ -238,25 +278,14 @@ def resolve_packages(
             shape.
 
     """
-    python_version = runtime.core_engines.python
-    with _pip_workspace(requirement_specs, runtime.python_packages) as work:
-        volume_mounts = [(work, pip_work_mount)] if runner is not None else ()
+    runner, pip_work_mount, _ = _container_settings(container)
+    with _pip_workspace(
+        prepared.rewritten_specs,
+        runtime.python_packages,
+    ) as work:
+        volume_mounts = _volume_mounts_for(work, pip_work_mount, prepared)
         _pip_run(
-            "install",
-            "--requirement",
-            str(work / "requirements.in"),
-            "--constraint",
-            str(work / "constraints.txt"),
-            "--dry-run",
-            "--ignore-installed",
-            "--platform",
-            runtime.pip_platform,
-            "--python-version",
-            python_version.replace(".", ""),
-            "--only-binary=:all:",
-            "--quiet",
-            "--report",
-            str(work / "report.json"),
+            *_dry_run_args(work, runtime, runner=runner),
             runner=runner,
             volume_mounts=volume_mounts,
         )
@@ -268,67 +297,73 @@ def resolve_packages(
     }
 
 
-def resolve_packages_to_bundle(
-    requirement_specs: Sequence[str],
-    runtime: GlueRuntimeMetadata,
-    *,
-    runner: PipRunner | None = None,
-    pip_work_mount: str = "/tmp/gtk-pip-work",  # noqa: S108  # nosec B108
+def _filter_bundled_wheels(
+    wheels_dir: Path,
+    runtime_pins: Mapping[str, str],
 ) -> dict[str, str]:
-    """Resolve requirements and omit packages pinned on the Glue image."""
-    resolved = resolve_packages(
-        requirement_specs,
-        runtime,
-        runner=runner,
-        pip_work_mount=pip_work_mount,
-    )
-    return packages_not_on_image(resolved, runtime.python_packages)
+    """Drop image-pinned wheels and return pins for the remainder."""
+    kept: dict[str, str] = {}
+    for wheel_path in wheels_dir.glob("*.whl"):
+        name, version, _, _ = parse_wheel_filename(wheel_path.name)
+        version_text = str(version)
+        if runtime_pins.get(name) == version_text:
+            wheel_path.unlink()
+            continue
+        kept[name] = version_text
+    return kept
 
 
-def download_wheels(
-    packages: Mapping[str, str],
-    dest: Path,
+def bundle_wheels(
+    prepared: PreparedRequirements,
     runtime: GlueRuntimeMetadata,
+    dest: Path,
     *,
-    runner: PipRunner | None = None,
-    gluewheels_staging_mount: str = (
-        "/tmp/gtk-staging"  # noqa: S108  # nosec B108
-    ),
-) -> None:
-    """Download pinned wheels for all packages into ``dest``.
+    container: PipInContainerConfig | None = None,
+) -> dict[str, str]:
+    """Build wheels for requirements and omit Glue image pins.
 
-    Runs ``pip download --no-deps --only-binary=:all:`` once per package,
-    sequentially.
+    Runs ``pip wheel`` with prepared ``requirements.in`` and Glue
+    ``constraints.txt``, then deletes wheels whose ``name==version`` matches
+    bundled image pins.
 
     Args:
-        packages: Package name → version pins.
+        prepared: Rewritten requirements and extra Docker mounts.
+        runtime: Bundled Glue runtime metadata (pins, Python, platform).
         dest: Directory to write ``.whl`` files into (created if missing).
-        runtime: Bundled Glue runtime metadata (Python, platform).
-        runner: When set, invoke pip via this callback (for example in Docker).
-        gluewheels_staging_mount: Container path for wheel download staging
-            when ``runner`` is set; must match :mod:`aws_glue_toolkit.docker`.
+        container: When set, invoke pip via Docker using these mount paths.
+
+    Returns:
+        Package pins (``name`` → ``version``) for wheels kept in ``dest``.
 
     Raises:
-        PipError: Any ``pip download`` subprocess exited with an error.
+        PipError: ``pip wheel`` exited with an error.
 
     """
-    python_version = runtime.core_engines.python
-    dest.mkdir(parents=True, exist_ok=True)
-    volume_mounts = (
-        [(dest.parent, gluewheels_staging_mount)] if runner is not None else ()
+    runner, pip_work_mount, gluewheels_staging_mount = _container_settings(
+        container,
     )
-    for name, version in packages.items():
+    dest.mkdir(parents=True, exist_ok=True)
+    with _pip_workspace(
+        prepared.rewritten_specs,
+        runtime.python_packages,
+    ) as work:
+        volume_mounts = _volume_mounts_for(
+            work,
+            pip_work_mount,
+            prepared,
+            staging_parent=dest.parent,
+            gluewheels_staging_mount=gluewheels_staging_mount,
+        )
         _pip_run(
-            "download",
-            "--no-deps",
-            "--only-binary=:all:",
-            "--dest",
+            "wheel",
+            "--requirement",
+            str(work / "requirements.in"),
+            "--constraint",
+            str(work / "constraints.txt"),
+            "--wheel-dir",
             str(dest),
-            "--platform",
-            runtime.pip_platform,
-            "--python-version",
-            python_version.replace(".", ""),
-            f"{name}=={version}",
+            "--no-cache-dir",
             runner=runner,
             volume_mounts=volume_mounts,
         )
+    return _filter_bundled_wheels(dest, runtime.python_packages)

@@ -21,8 +21,8 @@ Bundled JSON is validated before release.
 :func:`load_runtime`).
 
 :mod:`aws_glue_toolkit.pip` uses the pins as constraints and
-:func:`~aws_glue_toolkit.pip.packages_not_on_image` to omit packages
-already on the Glue image when building gluewheels.
+:func:`~aws_glue_toolkit.pip.bundle_wheels` to omit packages already on the
+Glue image when building gluewheels.
 
 Example::
 

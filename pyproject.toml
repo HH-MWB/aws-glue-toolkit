@@ -15,9 +15,10 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
+    "cyclopts>=4,<5",
+    "packaging>=24,<26",
     "pip>=22.2,<27",
     "pydantic>=2,<3",
-    "cyclopts>=4,<5",
 ]
 
 [project.urls]

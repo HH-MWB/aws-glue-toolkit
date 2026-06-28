@@ -37,6 +37,7 @@ from typing import (
     TYPE_CHECKING,
     Annotated,
     TypeAlias,
+    TypeVar,
     Unpack,
     cast,
     overload,
@@ -53,6 +54,7 @@ from aws_glue_toolkit import workflows
 from aws_glue_toolkit.docker import DockerError
 from aws_glue_toolkit.job import GlueJobProject, load_pyproject
 from aws_glue_toolkit.pip import PipError
+from aws_glue_toolkit.requirements import RequirementPreparationError
 from aws_glue_toolkit.runtime import UnsupportedGlueVersionError
 
 if TYPE_CHECKING:
@@ -73,6 +75,8 @@ if TYPE_CHECKING:
     ]
 
 __all__ = ["app"]
+
+T = TypeVar("T")
 
 # --- App ---
 
@@ -173,6 +177,23 @@ def _docker_unavailable(err: DockerError) -> GtkCommandError:
     )
 
 
+def _invalid_dependency(err: RequirementPreparationError) -> GtkCommandError:
+    return GtkCommandError(
+        GtkExitCode.CONFIG,
+        "Invalid dependency",
+        str(err),
+    )
+
+
+def _handle_dependency_errors(fn: Callable[[], T]) -> T:
+    try:
+        return fn()
+    except DockerError as err:
+        raise _docker_unavailable(err) from None
+    except RequirementPreparationError as err:
+        raise _invalid_dependency(err) from None
+
+
 def _gtk_command_body(
     fn: GtkPanelCommand | GtkVarargsCommand,
     job_dir: DirectoryPath,
@@ -265,12 +286,11 @@ def check(job: GlueJobProject) -> Panel:
     """Verify dependencies resolve for the job's Glue runtime.
 
     Resolves job dependencies inside the official AWS Glue local Docker
-    image against bundled Glue runtime pins, platform, and Python version.
+    image against bundled Glue runtime pins. Supports PyPI, ``file:`` path,
+    and git/VCS direct references in ``project.dependencies``.
     """
     try:
-        workflows.check(job)
-    except DockerError as err:
-        raise _docker_unavailable(err) from None
+        _handle_dependency_errors(lambda: workflows.check(job))
     except PipError:
         raise GtkCommandError(
             GtkExitCode.DATAERR,
@@ -289,13 +309,12 @@ def build(job: GlueJobProject) -> Panel:
     """Build gluewheels and dependencies zips under the job directory.
 
     Writes ``{name}-{version}.dependencies.zip`` and
-    ``{name}-{version}.gluewheels.zip``. Resolves and downloads wheels
-    inside the official AWS Glue local Docker image.
+    ``{name}-{version}.gluewheels.zip``. Bundles wheels from PyPI, ``file:``
+    path, and git/VCS dependencies inside the official AWS Glue local Docker
+    image. Omits packages already pinned on the Glue image.
     """
     try:
-        project_dir = workflows.build(job)
-    except DockerError as err:
-        raise _docker_unavailable(err) from None
+        project_dir = _handle_dependency_errors(lambda: workflows.build(job))
     except (OSError, PipError) as err:
         raise GtkCommandError(
             GtkExitCode.SOFTWARE,

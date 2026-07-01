@@ -1,0 +1,24 @@
+# EditorConfig is awesome: https://EditorConfig.org
+# Top-most EditorConfig file; root = true stops search at this directory
+root = true
+
+# Defaults for all files
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+# Python
+[*.py]
+indent_size = 4
+
+# YAML files (e.g. workflows, pre-commit config)
+[*.{yml,yaml}]
+indent_size = 2
+
+# Markdown files (trailing whitespace often meaningful)
+[*.md]
+trim_trailing_whitespace = false

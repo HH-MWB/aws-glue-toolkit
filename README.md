@@ -2,6 +2,8 @@
 
 A streamlined CLI utility designed to simplify the AWS Glue development lifecycle.
 
+> **Disclaimer:** This is an independent, community-maintained project. It is **not** affiliated with, endorsed by, or sponsored by Amazon Web Services (AWS). AWS, AWS Glue, and related marks are trademarks of Amazon.com, Inc. or its affiliates.
+
 ## Installation
 
 Requires Python 3.11+ and [Docker](https://docs.docker.com/get-docker/) (for all `gtk` commands; assumed installed, never installed by `gtk`). Installing the package adds the `gtk` command and a compatible `pip` release.
@@ -127,6 +129,10 @@ Success exits `0`. Unhandled errors exit `1`. For `run` and `test`, when Docker 
 
 Layered module layout (core, application, shell) is documented in
 [docs/architecture.md](docs/architecture.md).
+
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and workflow. Participants are expected to follow the [Code of Conduct](CODE_OF_CONDUCT.md). Report security vulnerabilities privately via [SECURITY.md](SECURITY.md).
 
 ## License
 

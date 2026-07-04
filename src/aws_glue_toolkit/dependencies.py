@@ -260,6 +260,7 @@ def _pip_workspace(
     """Provide a temporary directory prepared for ``pip``."""
     with TemporaryDirectory() as tmp:
         work = Path(tmp)
+        work.chmod(0o777)
 
         # Input files consumed by pip inside the container.
         (work / "requirements.in").write_text(

@@ -94,8 +94,11 @@ def stage_gluewheels_zip(destination: Path) -> Iterator[Path]:
     """
     with TemporaryDirectory() as tmp:
         staging_root = Path(tmp)
+        staging_root.chmod(0o755)
+
         wheels_dir = staging_root / "wheels"
         wheels_dir.mkdir()
+        wheels_dir.chmod(0o777)
 
         yield wheels_dir
 

@@ -66,6 +66,23 @@ Each job is a directory containing `pyproject.toml`. Unknown keys are ignored. T
 | `tool.aws-glue-toolkit.script` | yes | — | Entry script, relative to `source` |
 | `tool.aws-glue-toolkit.tests` | no | `tests` | Test directory, relative to the job root |
 
+### Pip index URLs
+
+During `gtk check` and `gtk build`, `gtk` forwards these host environment variables into the Glue Docker container when they are set:
+
+| Variable | Effect |
+| --- | --- |
+| `PIP_INDEX_URL` | Primary package index (replaces PyPI when set) |
+| `PIP_EXTRA_INDEX_URL` | Additional indexes; space-separated URLs per [pip](https://pip.pypa.io/en/stable/topics/configuration/) |
+
+```bash
+export PIP_EXTRA_INDEX_URL="https://my.company/simple"
+gtk check .
+gtk build .
+```
+
+Private indexes often also require `PIP_TRUSTED_HOST`; that variable is not forwarded by `gtk` today.
+
 ## Commands
 
 `[JOB-DIR]` is the job directory path, passed as a positional argument or with `--job-dir [JOB-DIR]` (default: `.`).

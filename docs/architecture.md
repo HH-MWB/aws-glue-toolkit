@@ -84,6 +84,7 @@ flowchart TB
 | --- | --- |
 | Container mount paths | `paths.py` (`WORKSPACE_MOUNT`, `PIP_WORK_MOUNT`, etc.) |
 | Generic Docker I/O | `docker.run_pip_in_container`, `run_container`, `run_job`, `run_tests` |
+| Host pip index env → container | `docker.run_pip_in_container` forwards `PIP_INDEX_URL` and `PIP_EXTRA_INDEX_URL` when set on the host |
 | pip-in-Docker adapter (exit codes → `PipError`) | `docker.pip_runner` via `dependencies.pip_error_from_returncode` |
 | Prepare `file:` deps for container pip | `dependencies.prepare_requirements` |
 | Resolve (dry-run) | `dependencies.resolve_packages` |

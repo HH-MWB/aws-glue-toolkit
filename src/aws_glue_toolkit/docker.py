@@ -22,6 +22,7 @@ Note:
 
 from __future__ import annotations
 
+from os import environ
 from shlex import join as shlex_join
 from shlex import quote as shlex_quote
 from shutil import which
@@ -60,6 +61,7 @@ __all__ = [
 ]
 
 _DOCKER_PLATFORM = "linux/amd64"
+_PIP_INDEX_ENV = ("PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL")
 
 
 # --- Exceptions ---
@@ -130,37 +132,35 @@ def build_run_argv(
     container_command: Sequence[str],
     *,
     extra_volumes: Sequence[tuple[Path, str]] = (),
+    env_forwards: Sequence[str] = (),
 ) -> list[str]:
     """Build a ``docker run`` argv list for one Glue local container."""
     host_dir = project_dir.resolve()
-
-    # Base run flags and workspace bind mount.
-    argv = [
+    return [
+        # Base: ephemeral, interactive, linux/amd64 (Glue local images).
         "docker",
         "run",
         "--rm",
         "-i",
         "--platform",
         _DOCKER_PLATFORM,
+        # Optional host env pass-through (-e VAR copies value from host).
+        *[flag for var in env_forwards for flag in ("-e", var)],
+        # Job root mounted read-write at the Glue workspace path.
         "-v",
         f"{host_dir}:{WORKSPACE_MOUNT}/",
-    ]
-
-    # Additional host→container binds (pip work, staging, file: deps).
-    for host_path, container_path in extra_volumes:
-        argv.extend(
-            ["-v", f"{host_path.resolve()}:{container_path}"],
-        )
-
-    argv.extend(
-        [
-            "--workdir",
-            WORKSPACE_MOUNT,
-            image,
-            *container_command,
+        # Extra binds: pip work dir, wheel staging, file: dependency paths.
+        *[
+            flag
+            for host_path, container_path in extra_volumes
+            for flag in ("-v", f"{host_path.resolve()}:{container_path}")
         ],
-    )
-    return argv
+        # Image entrypoint (spark-submit, pytest, pip shell command, …).
+        "--workdir",
+        WORKSPACE_MOUNT,
+        image,
+        *container_command,
+    ]
 
 
 # --- Subprocess shell ---
@@ -263,6 +263,8 @@ def run_pip_in_container(
         project_dir,
         build_pip_argv(mapped_args),
         extra_volumes=resolved_mounts,
+        # Host pip index config (see README “Pip index URLs”).
+        env_forwards=tuple(v for v in _PIP_INDEX_ENV if v in environ),
     )
     return run_container_capture(argv)
 

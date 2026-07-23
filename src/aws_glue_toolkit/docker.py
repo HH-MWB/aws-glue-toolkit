@@ -2,7 +2,9 @@
 
 Pure builders produce ``docker run``, ``spark-submit``, ``pytest``, and pip
 argv lists; :func:`run_container` and :func:`run_container_capture` are the
-subprocess shells.
+subprocess shells. :func:`run_job` mounts
+:mod:`aws_glue_toolkit.run_wrapper` so ``gtk run`` returns after the job
+finishes.
 
 Public API: :func:`build_run_argv`, :func:`build_spark_submit_argv`,
 :func:`build_pytest_argv`, :func:`build_pip_argv`, :func:`run_container`,
@@ -22,7 +24,9 @@ Note:
 
 from __future__ import annotations
 
+from importlib.resources import as_file, files
 from os import environ
+from pathlib import Path
 from shlex import join as shlex_join
 from shlex import quote as shlex_quote
 from shutil import which
@@ -38,6 +42,7 @@ from aws_glue_toolkit.paths import (
     GLUEWHEELS_STAGING_MOUNT,
     PIP_WORK_MOUNT,
     PYTHON_TARGET_MOUNT,
+    RUN_WRAPPER_MOUNT,
     WORKSPACE_MOUNT,
     project_path,
     rewrite_path_arg,
@@ -45,7 +50,6 @@ from aws_glue_toolkit.paths import (
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from pathlib import Path
 
     from aws_glue_toolkit.job import GlueJobProject
 
@@ -84,8 +88,15 @@ def build_spark_submit_argv(
     script: Path,
     job_name: str,
     job_args: Sequence[str],
+    *,
+    wrapper_path: str = RUN_WRAPPER_MOUNT,
 ) -> list[str]:
-    """Build ``spark-submit`` tokens for a Glue job inside the container."""
+    """Build ``spark-submit`` tokens for a Glue job inside the container.
+
+    Submits :mod:`aws_glue_toolkit.run_wrapper` as the entry script so the
+    container returns after the job finishes. The real script path is the
+    first argument to the wrapper.
+    """
     script_path = project_path(project_dir, script)
 
     # Inject --JOB_NAME unless the caller already set it.
@@ -98,7 +109,7 @@ def build_spark_submit_argv(
     else:
         args = ["--JOB_NAME", job_name, *job_args]
 
-    return ["spark-submit", script_path, *args]
+    return ["spark-submit", wrapper_path, script_path, *args]
 
 
 def _pytest_targets(
@@ -140,10 +151,18 @@ def build_install_and_spark_submit_argv(
     script: Path,
     job_name: str,
     job_args: Sequence[str],
+    *,
+    wrapper_path: str = RUN_WRAPPER_MOUNT,
 ) -> list[str]:
     """Build ``-c`` tokens: pip install ``--target``, then ``spark-submit``."""
     submit = shlex_join(
-        build_spark_submit_argv(project_dir, script, job_name, job_args),
+        build_spark_submit_argv(
+            project_dir,
+            script,
+            job_name,
+            job_args,
+            wrapper_path=wrapper_path,
+        ),
     )
     cmd = (
         f"{_pip_install_prefix()} && "
@@ -358,6 +377,9 @@ def run_job(
 ) -> int:
     """Run the job via ``spark-submit`` in the Glue Docker image.
 
+    Mounts :mod:`aws_glue_toolkit.run_wrapper` as the ``spark-submit`` entry
+    so the container returns after the job script finishes.
+
     Args:
         job: Resolved job config from
             :func:`~aws_glue_toolkit.job.load_pyproject`.
@@ -370,32 +392,35 @@ def run_job(
         Container exit code.
 
     """
-    if install_deps:
-        container_command = build_install_and_spark_submit_argv(
-            job.project_dir,
-            job.script,
-            job.name,
-            job_args,
-        )
-        env_forwards = _pip_index_env_forwards()
-    else:
-        container_command = build_spark_submit_argv(
-            job.project_dir,
-            job.script,
-            job.name,
-            job_args,
-        )
-        env_forwards = ()
+    wrapper = files("aws_glue_toolkit").joinpath("run_wrapper.py")
+    with as_file(wrapper) as wrapper_host:
+        volumes = [*extra_volumes, (Path(wrapper_host), RUN_WRAPPER_MOUNT)]
+        if install_deps:
+            container_command = build_install_and_spark_submit_argv(
+                job.project_dir,
+                job.script,
+                job.name,
+                job_args,
+            )
+            env_forwards = _pip_index_env_forwards()
+        else:
+            container_command = build_spark_submit_argv(
+                job.project_dir,
+                job.script,
+                job.name,
+                job_args,
+            )
+            env_forwards = ()
 
-    return run_container(
-        build_run_argv(
-            job.runtime.docker_image,
-            job.project_dir,
-            container_command,
-            extra_volumes=extra_volumes,
-            env_forwards=env_forwards,
-        ),
-    )
+        return run_container(
+            build_run_argv(
+                job.runtime.docker_image,
+                job.project_dir,
+                container_command,
+                extra_volumes=volumes,
+                env_forwards=env_forwards,
+            ),
+        )
 
 
 def run_tests(

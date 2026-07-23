@@ -50,7 +50,7 @@ gtk run .
 gtk test .
 ```
 
-`check` validates dependencies inside the official AWS Glue local Docker image. `build` writes deployment zips into the job directory; wheels are built or downloaded in the same image. `run` and `test` execute in that image (via `spark-submit` / pytest), mounting the job directory at `/home/hadoop/workspace` and installing `project.dependencies` into the ephemeral container when present. Tokens after the job directory are forwarded to the job or pytest. The container exit code is returned as the process exit code.
+`check` validates dependencies inside the official AWS Glue local Docker image. `build` writes deployment zips into the job directory; wheels are built or downloaded in the same image. `run` and `test` execute in that image (via `spark-submit` / pytest), mounting the job directory at `/home/hadoop/workspace` and installing `project.dependencies` into the ephemeral container when present. Tokens after the job directory are forwarded to the job or pytest. When the job or tests finish, the container exits and that exit code is returned as the process exit code.
 
 ## Configuration
 
@@ -124,7 +124,7 @@ Editable installs (`-e`) are rejected.
 
 ### run
 
-Runs the configured entry script with `spark-submit` inside the official AWS Glue local Docker image for `glue_version`. When `project.dependencies` is non-empty, `gtk` installs those packages into an ephemeral directory in the same container (with Glue runtime pins as constraints) and puts that directory on `PYTHONPATH` before `spark-submit`. Supports the same dependency forms as `check` / `build` (PyPI, `file:`, git/VCS). The job directory is mounted read-write at `/home/hadoop/workspace` with that path as the container working directory. `gtk` passes `--JOB_NAME` from `project.name` unless you supply your own `--JOB_NAME`. Any additional `--key value` tokens after `[JOB-DIR]` are forwarded to `spark-submit` and are available to the job via `getResolvedOptions` (give an explicit `[JOB-DIR]` when passing extra args from the default directory). Docker pulls the image on first use; `gtk` does not install Docker or pull images explicitly. Container stdout and stderr pass through unchanged. When Docker launches successfully, the process exit code is the container/`spark-submit` exit code (or pip's exit code if dependency install fails).
+Runs the configured entry script with `spark-submit` inside the official AWS Glue local Docker image for `glue_version`. When `project.dependencies` is non-empty, `gtk` installs those packages into an ephemeral directory in the same container (with Glue runtime pins as constraints) and puts that directory on `PYTHONPATH` before `spark-submit`. Supports the same dependency forms as `check` / `build` (PyPI, `file:`, git/VCS). The job directory is mounted read-write at `/home/hadoop/workspace` with that path as the container working directory. `gtk` passes `--JOB_NAME` from `project.name` unless you supply your own `--JOB_NAME`. Any additional `--key value` tokens after `[JOB-DIR]` are forwarded to the job for `getResolvedOptions` (give an explicit `[JOB-DIR]` when passing extra args from the default directory). After the script finishes, `gtk` shuts down the Spark driver so the container returns and the process exit code matches the job (or pip's exit code if dependency install fails). Docker pulls the image on first use; `gtk` does not install Docker or pull images explicitly. Container stdout and stderr pass through unchanged.
 
 ### test
 

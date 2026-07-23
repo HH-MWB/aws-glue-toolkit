@@ -97,12 +97,12 @@ def run(job: GlueJobProject, *job_args: str) -> int:
 
     When ``job.dependencies`` is non-empty, stages requirements and runs
     ``pip install --target`` in the same ephemeral container before
-    ``spark-submit``.
+    ``spark-submit``. Returns when the job finishes.
 
     Args:
         job: Resolved job config from
             :func:`~aws_glue_toolkit.job.load_pyproject`.
-        *job_args: Tokens forwarded to ``spark-submit`` after ``--JOB_NAME``.
+        *job_args: Tokens forwarded to the job after ``--JOB_NAME``.
 
     Returns:
         Container exit code.

@@ -350,9 +350,9 @@ def run(job: GlueJobProject, *job_args: str) -> int:
 
     Installs ``project.dependencies`` into the ephemeral container when
     present. Passes ``--JOB_NAME`` from ``project.name`` unless overridden.
-    Forwards additional tokens after ``job_dir`` to ``spark-submit`` for
-    ``getResolvedOptions``. Container stdout and stderr pass through
-    unchanged.
+    Forwards additional tokens after ``job_dir`` to the job for
+    ``getResolvedOptions``. Returns when the job finishes; container stdout
+    and stderr pass through unchanged.
 
     """
     try:

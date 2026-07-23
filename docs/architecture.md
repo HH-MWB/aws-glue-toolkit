@@ -20,11 +20,12 @@ imports: `job` → `runtime`, `dependencies` → `runtime`, `dependencies` → `
 
 ## Shell
 
-Process boundaries and use-case orchestration. Three roles:
+Process boundaries and use-case orchestration:
 
 | Role | Module | Responsibility |
 | --- | --- | --- |
 | **Infra** | `docker.py` | `docker run` argv builders, `run_job`, `run_tests`, `run_pip_in_container`, `pip_runner` |
+| **Infra** | `run_wrapper.py` | `spark-submit` entry for `gtk run`; clean container exit after the job |
 | **Application** | `app.py` | `check`, `build`, `run`, `test`; wires `dependencies` to Docker |
 | **Presentation** | `cli.py` | `gtk` entry point, `GtkCommandError`, exit codes, Rich panels |
 
@@ -55,6 +56,7 @@ flowchart TB
 
   subgraph shell [Shell]
     docker[docker.py]
+    runWrapper[run_wrapper.py]
     app[app.py]
     cli[cli.py]
   end
@@ -72,18 +74,21 @@ flowchart TB
   docker --> paths
   docker --> dependencies
   docker --> job
+  docker --> runWrapper
 ```
 
 - **Core** must not import `docker`, `cli`, or `app`.
 - **`dependencies`** must not import **`docker`** — use an injected `PipRunner` instead.
 - **Only `app`** imports both **`dependencies`** and **`docker`** (for orchestration).
+- **`run_wrapper.py`** is mounted into the Glue container by `docker.run_job` as the `spark-submit` entry script.
 
 ## Composition
 
 | Concern | Owner |
 | --- | --- |
-| Container mount paths | `paths.py` (`WORKSPACE_MOUNT`, `PIP_WORK_MOUNT`, etc.) |
+| Container mount paths | `paths.py` (`WORKSPACE_MOUNT`, `PIP_WORK_MOUNT`, `RUN_WRAPPER_MOUNT`, etc.) |
 | Generic Docker I/O | `docker.run_pip_in_container`, `run_container`, `run_job`, `run_tests` |
+| Clean exit after job script | `run_wrapper.py` mounted by `docker.run_job` |
 | Host pip index env → container | `docker.run_pip_in_container` forwards `PIP_INDEX_URL` and `PIP_EXTRA_INDEX_URL` when set on the host |
 | pip-in-Docker adapter (exit codes → `PipError`) | `docker.pip_runner` via `dependencies.pip_error_from_returncode` |
 | Prepare `file:` deps for container pip | `dependencies.prepare_requirements` |
@@ -111,7 +116,11 @@ flowchart TB
 `cli` → `app.run` / `app.test` → `dependencies.prepare_requirements` (when
 deps are present) → `dependencies.staged_requirements` →
 `docker.run_job` / `docker.run_tests` (pip install ``--target`` then
-spark-submit / pytest in one ephemeral container)
+spark-submit / pytest in one ephemeral container).
+
+For `gtk run`, `docker.run_job` mounts `run_wrapper.py` as the
+`spark-submit` entry so the container returns after the job script
+finishes.
 
 ## Git and VCS dependencies
 
@@ -123,7 +132,8 @@ Git direct URLs are passed through to pip inside the Glue image. See
 1. Fact, rule, or transform → core (`paths`, `runtime`, `job`, `dependencies`, `artifacts`)
 2. Multi-step user workflow → `app.py`
 3. Subprocess or Docker argv → `docker.py`
-4. Terminal, Cyclopts, or exit codes → `cli.py`
+4. In-container `spark-submit` entry for `gtk run` → `run_wrapper.py`
+5. Terminal, Cyclopts, or exit codes → `cli.py`
 
 If a change needs both pip and Docker, wire it in **`app`**, not in
 **`dependencies`** or **`docker`**.

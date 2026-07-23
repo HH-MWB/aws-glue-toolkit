@@ -30,7 +30,7 @@ uv run pre-commit install
 Before changing code, read [docs/architecture.md](docs/architecture.md). The package follows a **functional core / imperative shell** split:
 
 - **Core** (`paths.py`, `runtime.py`, `job.py`, `dependencies.py`, `artifacts.py`) — pure domain logic; no CLI, Docker, or terminal I/O.
-- **Shell** (`docker.py`, `app.py`, `cli.py`) — subprocess orchestration, use-case wiring, and the `gtk` entry point.
+- **Shell** (`docker.py`, `run_wrapper.py`, `app.py`, `cli.py`) — subprocess orchestration, use-case wiring, the `gtk run` spark-submit entry, and the `gtk` CLI.
 
 Put new business rules and transforms in core modules. Keep subprocess calls, exit-code mapping, and Rich output in the shell layer.
 

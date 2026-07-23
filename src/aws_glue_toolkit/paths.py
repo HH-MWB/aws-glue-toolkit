@@ -16,6 +16,7 @@ __all__ = [
     "EXT_MOUNT_PREFIX",
     "GLUEWHEELS_STAGING_MOUNT",
     "PIP_WORK_MOUNT",
+    "PYTHON_TARGET_MOUNT",
     "WORKSPACE_MOUNT",
     "map_host_to_container",
     "project_path",
@@ -25,6 +26,7 @@ __all__ = [
 WORKSPACE_MOUNT = "/home/hadoop/workspace"
 PIP_WORK_MOUNT = "/tmp/gtk-pip-work"  # noqa: S108  # nosec B108
 GLUEWHEELS_STAGING_MOUNT = "/tmp/gtk-staging"  # noqa: S108  # nosec B108
+PYTHON_TARGET_MOUNT = "/tmp/gtk-python"  # noqa: S108  # nosec B108
 EXT_MOUNT_PREFIX = "/tmp/gtk-ext"  # noqa: S108  # nosec B108
 
 

@@ -7,6 +7,7 @@ on the Glue image. Pass a :class:`PipRunner` from
 local Docker image.
 
 Public API: :class:`PreparedRequirements`, :func:`prepare_requirements`,
+:func:`staged_requirements`, :func:`pip_install_target_args`,
 :func:`resolve_packages`, :func:`bundle_wheels`, :class:`PipRunner`,
 :exc:`PipError`, :exc:`RequirementPreparationError`.
 """
@@ -29,6 +30,7 @@ from aws_glue_toolkit.paths import (
     EXT_MOUNT_PREFIX,
     GLUEWHEELS_STAGING_MOUNT,
     PIP_WORK_MOUNT,
+    PYTHON_TARGET_MOUNT,
     WORKSPACE_MOUNT,
 )
 
@@ -46,8 +48,10 @@ __all__ = [
     "RequirementPreparationError",
     "bundle_wheels",
     "pip_error_from_returncode",
+    "pip_install_target_args",
     "prepare_requirements",
     "resolve_packages",
+    "staged_requirements",
 ]
 
 
@@ -292,6 +296,44 @@ def _volume_mounts_for(
 
 
 # --- Public pip API ---
+
+
+@contextmanager
+def staged_requirements(
+    prepared: PreparedRequirements,
+    runtime: GlueRuntimeMetadata,
+) -> Iterator[tuple[Path, Sequence[tuple[Path, str]]]]:
+    """Stage requirements files and yield pip work dir plus volume mounts.
+
+    Args:
+        prepared: Dependency specs rewritten for container pip.
+        runtime: Glue runtime metadata (image pins used as constraints).
+
+    Yields:
+        ``(work, mounts)`` where ``work`` holds ``requirements.in`` and
+        ``constraints.txt``, and ``mounts`` are docker ``-v`` pairs for
+        the pip work dir and any external ``file:`` dependency paths.
+
+    """
+    with _pip_workspace(
+        prepared.rewritten_specs,
+        runtime.python_packages,
+    ) as work:
+        yield work, _volume_mounts_for(work, prepared)
+
+
+def pip_install_target_args() -> list[str]:
+    """Return ``pip install --target`` argv using container mount paths."""
+    return [
+        "install",
+        "--target",
+        PYTHON_TARGET_MOUNT,
+        "--requirement",
+        f"{PIP_WORK_MOUNT}/requirements.in",
+        "--constraint",
+        f"{PIP_WORK_MOUNT}/constraints.txt",
+        "--quiet",
+    ]
 
 
 def resolve_packages(

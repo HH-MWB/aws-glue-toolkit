@@ -12,7 +12,7 @@ Domain facts, rules, and transforms. No CLI, Docker subprocesses, or terminal I/
 | `paths.py` | Container mount constants; host→container path mapping |
 | `runtime.py` | Bundled Glue version JSON → `GlueRuntimeMetadata` |
 | `job.py` | `pyproject.toml` validation → `GlueJobProject` |
-| `dependencies.py` | PEP 508 prep; pip dry-run resolve, `pip wheel`, image-pin filtering; `PipRunner` injection |
+| `dependencies.py` | PEP 508 prep; pip dry-run resolve, `pip wheel`, image-pin filtering; staged install for run/test; `PipRunner` injection |
 | `artifacts.py` | Zip layout for `.dependencies.zip` and gluewheels tree staging |
 
 Core modules must not import `docker`, `cli`, or `app`. Allowed sibling
@@ -25,7 +25,7 @@ Process boundaries and use-case orchestration. Three roles:
 | Role | Module | Responsibility |
 | --- | --- | --- |
 | **Infra** | `docker.py` | `docker run` argv builders, `run_job`, `run_tests`, `run_pip_in_container`, `pip_runner` |
-| **Application** | `app.py` | `check`, `build`; wires `dependencies` to Docker via `pip_runner` |
+| **Application** | `app.py` | `check`, `build`, `run`, `test`; wires `dependencies` to Docker |
 | **Presentation** | `cli.py` | `gtk` entry point, `GtkCommandError`, exit codes, Rich panels |
 
 `app` raises domain exceptions (`PipError`, `DockerError`, `ValueError`,
@@ -108,7 +108,10 @@ flowchart TB
 
 ### `gtk run` / `gtk test`
 
-`cli` → `docker.run_job` / `docker.run_tests`
+`cli` → `app.run` / `app.test` → `dependencies.prepare_requirements` (when
+deps are present) → `dependencies.staged_requirements` →
+`docker.run_job` / `docker.run_tests` (pip install ``--target`` then
+spark-submit / pytest in one ephemeral container)
 
 ## Git and VCS dependencies
 
@@ -139,6 +142,6 @@ Library callers typically import:
 - `from aws_glue_toolkit.runtime import load_runtime`
 - `from aws_glue_toolkit.dependencies import prepare_requirements`
 - `from aws_glue_toolkit.artifacts import build_dependencies_zip`
-- `from aws_glue_toolkit.app import check, build`
+- `from aws_glue_toolkit.app import check, build, run, test`
 
 The `gtk` CLI is registered at `aws_glue_toolkit.cli:app`.

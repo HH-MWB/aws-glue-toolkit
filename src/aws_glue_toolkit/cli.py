@@ -52,8 +52,10 @@ from rich.panel import Panel
 
 from aws_glue_toolkit.app import build as build_job
 from aws_glue_toolkit.app import check as check_job
+from aws_glue_toolkit.app import run as run_job
+from aws_glue_toolkit.app import test as test_job
 from aws_glue_toolkit.dependencies import PipError, RequirementPreparationError
-from aws_glue_toolkit.docker import DockerError, run_job, run_tests
+from aws_glue_toolkit.docker import DockerError
 from aws_glue_toolkit.job import GlueJobProject, load_pyproject
 from aws_glue_toolkit.runtime import UnsupportedGlueVersionError
 
@@ -346,36 +348,44 @@ def build(job: GlueJobProject) -> Panel:
 def run(job: GlueJobProject, *job_args: str) -> int:
     """Run the job in the official AWS Glue local Docker image.
 
-    Passes ``--JOB_NAME`` from ``project.name`` unless overridden. Forwards
-    additional tokens after ``job_dir`` to ``spark-submit`` for
+    Installs ``project.dependencies`` into the ephemeral container when
+    present. Passes ``--JOB_NAME`` from ``project.name`` unless overridden.
+    Forwards additional tokens after ``job_dir`` to ``spark-submit`` for
     ``getResolvedOptions``. Container stdout and stderr pass through
     unchanged.
 
     """
     try:
-        return run_job(job, *job_args)
-    except DockerError as err:
-        _print_command_error(_docker_unavailable(err))
-        return int(GtkExitCode.UNAVAILABLE)
+        return _handle_dependency_errors(lambda: run_job(job, *job_args))
+    except PipError as err:
+        raise GtkCommandError(
+            GtkExitCode.DATAERR,
+            "Dependency install failed",
+            str(err),
+        ) from None
 
 
 @gtk_command
 def test(job: GlueJobProject, *pytest_args: str) -> int:
     """Run pytest in the official AWS Glue local Docker image.
 
-    Uses ``tool.aws-glue-toolkit.tests`` and sets ``PYTHONPATH`` to
+    Installs ``project.dependencies`` into the ephemeral container when
+    present. Uses ``tool.aws-glue-toolkit.tests`` and sets ``PYTHONPATH`` to
     ``source``. Forwards additional tokens after ``job_dir`` to ``pytest``.
     Container stdout and stderr pass through unchanged.
 
     """
     try:
-        return run_tests(job, *pytest_args)
+        return _handle_dependency_errors(lambda: test_job(job, *pytest_args))
     except ValueError as err:
         raise GtkCommandError(
             GtkExitCode.CONFIG,
             "Tests directory not found",
             str(err),
         ) from None
-    except DockerError as err:
-        _print_command_error(_docker_unavailable(err))
-        return int(GtkExitCode.UNAVAILABLE)
+    except PipError as err:
+        raise GtkCommandError(
+            GtkExitCode.DATAERR,
+            "Dependency install failed",
+            str(err),
+        ) from None

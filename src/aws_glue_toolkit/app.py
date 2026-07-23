@@ -1,4 +1,4 @@
-"""Application orchestration for ``gtk`` check and build workflows.
+"""Application orchestration for ``gtk`` check, build, run, and test.
 
 Wires :mod:`aws_glue_toolkit.dependencies` to
 :mod:`aws_glue_toolkit.docker` for pip-in-container execution.
@@ -19,8 +19,9 @@ from aws_glue_toolkit.dependencies import (
     bundle_wheels,
     prepare_requirements,
     resolve_packages,
+    staged_requirements,
 )
-from aws_glue_toolkit.docker import pip_runner
+from aws_glue_toolkit.docker import pip_runner, run_job, run_tests
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -30,6 +31,8 @@ if TYPE_CHECKING:
 __all__ = [
     "build",
     "check",
+    "run",
+    "test",
 ]
 
 
@@ -87,3 +90,69 @@ def build(job: GlueJobProject) -> Path:
         )
         write_gluewheels_tree(wheels_dir, packages)
     return job.project_dir
+
+
+def run(job: GlueJobProject, *job_args: str) -> int:
+    """Run the job in the Glue Docker image, installing deps when needed.
+
+    When ``job.dependencies`` is non-empty, stages requirements and runs
+    ``pip install --target`` in the same ephemeral container before
+    ``spark-submit``.
+
+    Args:
+        job: Resolved job config from
+            :func:`~aws_glue_toolkit.job.load_pyproject`.
+        *job_args: Tokens forwarded to ``spark-submit`` after ``--JOB_NAME``.
+
+    Returns:
+        Container exit code.
+
+    Raises:
+        RequirementPreparationError: A dependency spec could not be prepared.
+        DockerError: Docker is unavailable or the container failed to launch.
+
+    """
+    if not job.dependencies:
+        return run_job(job, *job_args)
+
+    prepared = prepare_requirements(job.dependencies, job.project_dir)
+    with staged_requirements(prepared, job.runtime) as (_work, mounts):
+        return run_job(
+            job,
+            *job_args,
+            extra_volumes=mounts,
+            install_deps=True,
+        )
+
+
+def test(job: GlueJobProject, *pytest_args: str) -> int:
+    """Run pytest in the Glue Docker image, installing deps when needed.
+
+    When ``job.dependencies`` is non-empty, stages requirements and runs
+    ``pip install --target`` in the same ephemeral container before pytest.
+
+    Args:
+        job: Resolved job config from
+            :func:`~aws_glue_toolkit.job.load_pyproject`.
+        *pytest_args: Tokens forwarded to ``pytest``.
+
+    Returns:
+        Container exit code.
+
+    Raises:
+        ValueError: Configured tests directory does not exist.
+        RequirementPreparationError: A dependency spec could not be prepared.
+        DockerError: Docker is unavailable or the container failed to launch.
+
+    """
+    if not job.dependencies:
+        return run_tests(job, *pytest_args)
+
+    prepared = prepare_requirements(job.dependencies, job.project_dir)
+    with staged_requirements(prepared, job.runtime) as (_work, mounts):
+        return run_tests(
+            job,
+            *pytest_args,
+            extra_volumes=mounts,
+            install_deps=True,
+        )

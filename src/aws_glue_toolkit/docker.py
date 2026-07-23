@@ -29,10 +29,15 @@ from shutil import which
 from subprocess import CompletedProcess, run  # nosec B404
 from typing import TYPE_CHECKING
 
-from aws_glue_toolkit.dependencies import PipRunner, pip_error_from_returncode
+from aws_glue_toolkit.dependencies import (
+    PipRunner,
+    pip_error_from_returncode,
+    pip_install_target_args,
+)
 from aws_glue_toolkit.paths import (
     GLUEWHEELS_STAGING_MOUNT,
     PIP_WORK_MOUNT,
+    PYTHON_TARGET_MOUNT,
     WORKSPACE_MOUNT,
     project_path,
     rewrite_path_arg,
@@ -96,6 +101,18 @@ def build_spark_submit_argv(
     return ["spark-submit", script_path, *args]
 
 
+def _pytest_targets(
+    project_dir: Path,
+    tests_dir: Path,
+    pytest_args: Sequence[str],
+) -> Sequence[str]:
+    """Return pytest path/option tokens for the container command."""
+    tests_path = tests_dir.relative_to(project_dir).as_posix()
+    if pytest_args and not pytest_args[0].startswith("-"):
+        return pytest_args
+    return [tests_path, *pytest_args]
+
+
 def build_pytest_argv(
     project_dir: Path,
     source_dir: Path,
@@ -104,17 +121,51 @@ def build_pytest_argv(
 ) -> list[str]:
     """Build ``-c`` tokens to run ``pytest`` in the Glue image entrypoint."""
     source_mount = project_path(project_dir, source_dir)
-    tests_path = tests_dir.relative_to(project_dir).as_posix()
-
-    # Default to the configured tests directory when no path target is given.
-    targets = (
-        pytest_args
-        if pytest_args and not pytest_args[0].startswith("-")
-        else [tests_path, *pytest_args]
-    )
+    targets = _pytest_targets(project_dir, tests_dir, pytest_args)
 
     cmd = (
         f"export PYTHONPATH={shlex_quote(source_mount)}:$PYTHONPATH; "
+        f"python3 -m pytest {shlex_join(targets)}"
+    )
+    return ["-c", cmd]
+
+
+def _pip_install_prefix() -> str:
+    """Shell prefix that installs deps into :data:`PYTHON_TARGET_MOUNT`."""
+    return f"python3 -m pip {shlex_join(pip_install_target_args())}"
+
+
+def build_install_and_spark_submit_argv(
+    project_dir: Path,
+    script: Path,
+    job_name: str,
+    job_args: Sequence[str],
+) -> list[str]:
+    """Build ``-c`` tokens: pip install ``--target``, then ``spark-submit``."""
+    submit = shlex_join(
+        build_spark_submit_argv(project_dir, script, job_name, job_args),
+    )
+    cmd = (
+        f"{_pip_install_prefix()} && "
+        f"export PYTHONPATH={shlex_quote(PYTHON_TARGET_MOUNT)}:$PYTHONPATH && "
+        f"{submit}"
+    )
+    return ["-c", cmd]
+
+
+def build_install_and_pytest_argv(
+    project_dir: Path,
+    source_dir: Path,
+    tests_dir: Path,
+    pytest_args: Sequence[str],
+) -> list[str]:
+    """Build ``-c`` tokens: pip install ``--target``, then ``pytest``."""
+    source_mount = project_path(project_dir, source_dir)
+    targets = _pytest_targets(project_dir, tests_dir, pytest_args)
+    cmd = (
+        f"{_pip_install_prefix()} && "
+        f"export PYTHONPATH={shlex_quote(PYTHON_TARGET_MOUNT)}:"
+        f"{shlex_quote(source_mount)}:$PYTHONPATH; "
         f"python3 -m pytest {shlex_join(targets)}"
     )
     return ["-c", cmd]
@@ -170,6 +221,11 @@ def _ensure_docker_available() -> None:
     if which("docker") is None:
         msg = "docker not found in PATH"
         raise DockerError(msg)
+
+
+def _pip_index_env_forwards() -> tuple[str, ...]:
+    """Host pip index env vars to forward into the container when set."""
+    return tuple(v for v in _PIP_INDEX_ENV if v in environ)
 
 
 def run_container(argv: Sequence[str]) -> int:
@@ -264,7 +320,7 @@ def run_pip_in_container(
         build_pip_argv(mapped_args),
         extra_volumes=resolved_mounts,
         # Host pip index config (see README “Pip index URLs”).
-        env_forwards=tuple(v for v in _PIP_INDEX_ENV if v in environ),
+        env_forwards=_pip_index_env_forwards(),
     )
     return run_container_capture(argv)
 
@@ -294,39 +350,69 @@ def pip_runner(job: GlueJobProject) -> PipRunner:
     return execute_pip
 
 
-def run_job(job: GlueJobProject, *job_args: str) -> int:
+def run_job(
+    job: GlueJobProject,
+    *job_args: str,
+    extra_volumes: Sequence[tuple[Path, str]] = (),
+    install_deps: bool = False,
+) -> int:
     """Run the job via ``spark-submit`` in the Glue Docker image.
 
     Args:
         job: Resolved job config from
             :func:`~aws_glue_toolkit.job.load_pyproject`.
         *job_args: Tokens forwarded to ``spark-submit`` after ``--JOB_NAME``.
+        extra_volumes: Extra host→container binds (pip work, ``file:`` deps).
+        install_deps: When true, pip-install job deps into the ephemeral
+            container before ``spark-submit`` and forward pip index env vars.
 
     Returns:
         Container exit code.
 
     """
+    if install_deps:
+        container_command = build_install_and_spark_submit_argv(
+            job.project_dir,
+            job.script,
+            job.name,
+            job_args,
+        )
+        env_forwards = _pip_index_env_forwards()
+    else:
+        container_command = build_spark_submit_argv(
+            job.project_dir,
+            job.script,
+            job.name,
+            job_args,
+        )
+        env_forwards = ()
+
     return run_container(
         build_run_argv(
             job.runtime.docker_image,
             job.project_dir,
-            build_spark_submit_argv(
-                job.project_dir,
-                job.script,
-                job.name,
-                job_args,
-            ),
+            container_command,
+            extra_volumes=extra_volumes,
+            env_forwards=env_forwards,
         ),
     )
 
 
-def run_tests(job: GlueJobProject, *pytest_args: str) -> int:
+def run_tests(
+    job: GlueJobProject,
+    *pytest_args: str,
+    extra_volumes: Sequence[tuple[Path, str]] = (),
+    install_deps: bool = False,
+) -> int:
     """Run pytest in the Glue Docker image.
 
     Args:
         job: Resolved job config from
             :func:`~aws_glue_toolkit.job.load_pyproject`.
         *pytest_args: Tokens forwarded to ``pytest``.
+        extra_volumes: Extra host→container binds (pip work, ``file:`` deps).
+        install_deps: When true, pip-install job deps into the ephemeral
+            container before pytest and forward pip index env vars.
 
     Returns:
         Container exit code.
@@ -338,15 +424,30 @@ def run_tests(job: GlueJobProject, *pytest_args: str) -> int:
     if not job.tests_dir.is_dir():
         msg = f"tests directory not found: {job.tests_dir}"
         raise ValueError(msg)
+
+    if install_deps:
+        container_command = build_install_and_pytest_argv(
+            job.project_dir,
+            job.source_dir,
+            job.tests_dir,
+            pytest_args,
+        )
+        env_forwards = _pip_index_env_forwards()
+    else:
+        container_command = build_pytest_argv(
+            job.project_dir,
+            job.source_dir,
+            job.tests_dir,
+            pytest_args,
+        )
+        env_forwards = ()
+
     return run_container(
         build_run_argv(
             job.runtime.docker_image,
             job.project_dir,
-            build_pytest_argv(
-                job.project_dir,
-                job.source_dir,
-                job.tests_dir,
-                pytest_args,
-            ),
+            container_command,
+            extra_volumes=extra_volumes,
+            env_forwards=env_forwards,
         ),
     )

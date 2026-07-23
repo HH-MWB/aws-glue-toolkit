@@ -2,7 +2,8 @@
 
 Modules:
 
-- :mod:`aws_glue_toolkit.app` — ``gtk`` check and build orchestration
+- :mod:`aws_glue_toolkit.app` — ``gtk`` check, build, run, and test
+  orchestration
 - :mod:`aws_glue_toolkit.artifacts` — Glue job zip artifact formats
 - :mod:`aws_glue_toolkit.cli` — ``gtk`` CLI (`check`, `build`, `run`, `test`)
 - :mod:`aws_glue_toolkit.dependencies` — dependency prep and pip resolution

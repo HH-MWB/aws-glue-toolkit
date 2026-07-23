@@ -50,7 +50,7 @@ gtk run .
 gtk test .
 ```
 
-`check` validates dependencies inside the official AWS Glue local Docker image. `build` writes deployment zips into the job directory; wheels are built or downloaded in the same image. `run` executes the entry script in that image via `spark-submit`, mounting the job directory at `/home/hadoop/workspace`. Tokens after the job directory are forwarded to the job (for example for `getResolvedOptions`). The container exit code is returned as the process exit code.
+`check` validates dependencies inside the official AWS Glue local Docker image. `build` writes deployment zips into the job directory; wheels are built or downloaded in the same image. `run` and `test` execute in that image (via `spark-submit` / pytest), mounting the job directory at `/home/hadoop/workspace` and installing `project.dependencies` into the ephemeral container when present. Tokens after the job directory are forwarded to the job or pytest. The container exit code is returned as the process exit code.
 
 ## Configuration
 
@@ -68,7 +68,7 @@ Each job is a directory containing `pyproject.toml`. Unknown keys are ignored. T
 
 ### Pip index URLs
 
-During `gtk check` and `gtk build`, `gtk` forwards these host environment variables into the Glue Docker container when they are set:
+During `gtk check`, `gtk build`, `gtk run`, and `gtk test`, `gtk` forwards these host environment variables into the Glue Docker container when they are set (for pip resolution, wheel bundling, or ephemeral install on run/test):
 
 | Variable | Effect |
 | --- | --- |
@@ -79,6 +79,8 @@ During `gtk check` and `gtk build`, `gtk` forwards these host environment variab
 export PIP_EXTRA_INDEX_URL="https://my.company/simple"
 gtk check .
 gtk build .
+gtk run .
+gtk test .
 ```
 
 Private indexes often also require `PIP_TRUSTED_HOST`; that variable is not forwarded by `gtk` today.
@@ -122,11 +124,11 @@ Editable installs (`-e`) are rejected.
 
 ### run
 
-Runs the configured entry script with `spark-submit` inside the official AWS Glue local Docker image for `glue_version`. The job directory is mounted read-write at `/home/hadoop/workspace` with that path as the container working directory. `gtk` passes `--JOB_NAME` from `project.name` unless you supply your own `--JOB_NAME`. Any additional `--key value` tokens after `[JOB-DIR]` are forwarded to `spark-submit` and are available to the job via `getResolvedOptions` (give an explicit `[JOB-DIR]` when passing extra args from the default directory). Docker pulls the image on first use; `gtk` does not install Docker or pull images explicitly. Container stdout and stderr pass through unchanged. When Docker launches successfully, the process exit code is the container/`spark-submit` exit code.
+Runs the configured entry script with `spark-submit` inside the official AWS Glue local Docker image for `glue_version`. When `project.dependencies` is non-empty, `gtk` installs those packages into an ephemeral directory in the same container (with Glue runtime pins as constraints) and puts that directory on `PYTHONPATH` before `spark-submit`. Supports the same dependency forms as `check` / `build` (PyPI, `file:`, git/VCS). The job directory is mounted read-write at `/home/hadoop/workspace` with that path as the container working directory. `gtk` passes `--JOB_NAME` from `project.name` unless you supply your own `--JOB_NAME`. Any additional `--key value` tokens after `[JOB-DIR]` are forwarded to `spark-submit` and are available to the job via `getResolvedOptions` (give an explicit `[JOB-DIR]` when passing extra args from the default directory). Docker pulls the image on first use; `gtk` does not install Docker or pull images explicitly. Container stdout and stderr pass through unchanged. When Docker launches successfully, the process exit code is the container/`spark-submit` exit code (or pip's exit code if dependency install fails).
 
 ### test
 
-Runs `python3 -m pytest` inside the official AWS Glue local Docker image for `glue_version`. The job directory is mounted read-write at `/home/hadoop/workspace` with that path as the container working directory. `gtk` sets `PYTHONPATH` to the configured `source` directory and, with no extra tokens, runs pytest against the configured `tests` directory (default `tests`). When the first forwarded token is a pytest option (starts with `-`), that directory is still passed before the options (for example `gtk test . -v` runs `tests` with verbose output). When the first forwarded token is a path, only those tokens are passed to pytest. Docker pulls the image on first use; `gtk` does not install Docker or pull images explicitly. Container stdout and stderr pass through unchanged. When Docker launches successfully, the process exit code is pytest's exit code (for example `1` when tests fail).
+Runs `python3 -m pytest` inside the official AWS Glue local Docker image for `glue_version`. When `project.dependencies` is non-empty, `gtk` installs those packages into an ephemeral directory in the same container (with Glue runtime pins as constraints) and puts that directory on `PYTHONPATH` before pytest. Supports the same dependency forms as `check` / `build` (PyPI, `file:`, git/VCS). The job directory is mounted read-write at `/home/hadoop/workspace` with that path as the container working directory. `gtk` sets `PYTHONPATH` to the configured `source` directory (and the install target when deps are present) and, with no extra tokens, runs pytest against the configured `tests` directory (default `tests`). When the first forwarded token is a pytest option (starts with `-`), that directory is still passed before the options (for example `gtk test . -v` runs `tests` with verbose output). When the first forwarded token is a path, only those tokens are passed to pytest. Docker pulls the image on first use; `gtk` does not install Docker or pull images explicitly. Container stdout and stderr pass through unchanged. When Docker launches successfully, the process exit code is pytest's exit code (for example `1` when tests fail), or pip's exit code if dependency install fails.
 
 ### Exit codes
 

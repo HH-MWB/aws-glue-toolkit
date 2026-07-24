@@ -1,11 +1,19 @@
 [project]
 name = "aws-glue-toolkit"
-version = "0.1.0"
+version = "0.2.0"
 description = "A streamlined CLI utility designed to simplify the AWS Glue development lifecycle."
 readme = "README.md"
 authors = [{ name = "HH-MWB", email = "h.hong@mail.com" }]
 license = "MIT"
 requires-python = ">=3.11"
+keywords = [
+    "aws",
+    "glue",
+    "etl",
+    "spark",
+    "cli",
+    "docker",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -15,13 +23,16 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
+    "cyclopts>=4,<5",
+    "packaging>=24,<26",
     "pip>=22.2,<27",
     "pydantic>=2,<3",
-    "cyclopts>=4,<5",
 ]
 
 [project.urls]
 Repository = "https://github.com/HH-MWB/aws-glue-toolkit"
+Issues = "https://github.com/HH-MWB/aws-glue-toolkit/issues"
+Changelog = "https://github.com/HH-MWB/aws-glue-toolkit/releases"
 PyPI = "https://pypi.org/project/aws-glue-toolkit/"
 
 [project.scripts]

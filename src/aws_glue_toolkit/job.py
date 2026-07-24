@@ -15,6 +15,8 @@ Schema rules (unknown keys ignored):
 - ``tool.aws-glue-toolkit.source`` — required; job Python source directory
 - ``tool.aws-glue-toolkit.script`` — required; entry script path under
   ``source``
+- ``tool.aws-glue-toolkit.tests`` — optional; defaults to
+  :data:`DEFAULT_TESTS_DIR`
 
 Example::
 
@@ -42,18 +44,21 @@ if TYPE_CHECKING:
 
 __all__ = [
     "DEFAULT_PACKAGE_VERSION",
+    "DEFAULT_TESTS_DIR",
     "GlueJobProject",
     "load_pyproject",
+    "parse_pyproject_text",
 ]
 
 DEFAULT_PACKAGE_VERSION: Final[str] = "0.0.0"
+DEFAULT_TESTS_DIR: Final[str] = "tests"
 
 # --- Resolved job config ---
 
 
 @dataclass(frozen=True, slots=True)
-class GlueJobProject:
-    """Resolved Glue job configuration for ``pip``, ``artifacts``, and ``cli``.
+class GlueJobProject:  # pylint: disable=too-many-instance-attributes
+    """Resolved job config for ``dependencies``, ``artifacts``, and ``cli``.
 
     Built only by :func:`load_pyproject`.
     Fields are fully resolved (no ``None`` for :attr:`version`).
@@ -65,6 +70,8 @@ class GlueJobProject:
         project_dir: Directory containing ``pyproject.toml``.
         source_dir: Resolved ``project_dir / source``.
         script: Resolved entry script path under :attr:`source_dir`.
+        tests_dir: Resolved ``project_dir / tests`` from
+            ``[tool.aws-glue-toolkit].tests``.
         dependencies: ``[project].dependencies`` as an immutable tuple.
         runtime: Bundled Glue runtime metadata for
             ``[tool.aws-glue-toolkit].glue_version``.
@@ -76,6 +83,7 @@ class GlueJobProject:
     project_dir: Path
     source_dir: Path
     script: Path
+    tests_dir: Path
     dependencies: tuple[str, ...]
     runtime: GlueRuntimeMetadata
 
@@ -111,6 +119,7 @@ class _AwsGlueToolkit(BaseModel):
     glue_version: str
     source: str
     script: str
+    tests: str = DEFAULT_TESTS_DIR
 
 
 class _Tool(BaseModel):
@@ -135,6 +144,23 @@ class _PyProject(BaseModel):
 # --- Load ---
 
 
+def parse_pyproject_text(text: str) -> _PyProject:
+    """Parse and validate ``pyproject.toml`` content.
+
+    Args:
+        text: Raw TOML document.
+
+    Returns:
+        Validated root model (private; use :func:`load_pyproject`).
+
+    Raises:
+        TOMLDecodeError: TOML syntax error.
+        pydantic.ValidationError: Document failed schema validation.
+
+    """
+    return _PyProject.model_validate(loads(text))
+
+
 def load_pyproject(project_dir: Path) -> GlueJobProject:
     """Load ``project_dir/pyproject.toml`` and return job config.
 
@@ -149,27 +175,27 @@ def load_pyproject(project_dir: Path) -> GlueJobProject:
 
     """
     # Parse and validate pyproject.toml.
-    pyproject = _PyProject.model_validate(
-        loads((project_dir / "pyproject.toml").read_text(encoding="utf-8")),
+    parsed = parse_pyproject_text(
+        (project_dir / "pyproject.toml").read_text(encoding="utf-8"),
     )
 
-    # Resolve source directory and entry script on disk.
-    source_dir = project_dir / pyproject.tool.aws_glue_toolkit.source
+    # Resolve source tree and entry script on disk.
+    source_dir = project_dir / parsed.tool.aws_glue_toolkit.source
     if not source_dir.is_dir():
         msg = f"source directory not found: {source_dir}"
         raise ValueError(msg)
-    script_path = source_dir / pyproject.tool.aws_glue_toolkit.script
+    script_path = source_dir / parsed.tool.aws_glue_toolkit.script
     if not script_path.is_file():
         msg = f"script not found: {script_path}"
         raise ValueError(msg)
 
-    # Return resolved job config.
     return GlueJobProject(
-        name=pyproject.project.name,
-        version=pyproject.project.version,
+        name=parsed.project.name,
+        version=parsed.project.version,
         project_dir=project_dir,
         source_dir=source_dir,
         script=script_path,
-        dependencies=tuple(pyproject.project.dependencies),
-        runtime=load_runtime(pyproject.tool.aws_glue_toolkit.glue_version),
+        tests_dir=project_dir / parsed.tool.aws_glue_toolkit.tests,
+        dependencies=tuple(parsed.project.dependencies),
+        runtime=load_runtime(parsed.tool.aws_glue_toolkit.glue_version),
     )

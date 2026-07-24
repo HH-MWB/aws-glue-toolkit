@@ -7,21 +7,24 @@ Each supported Glue version has a JSON file shipped in the wheel at
 - ``glue_version`` — Glue release string
 - ``core_engines`` — Spark, Python, and Scala versions on the worker image
 - ``table_formats`` — Hudi, Iceberg, and Delta Lake library versions
-- ``pip_platform`` — ``pip --platform`` tag for manylinux wheels
+- ``pip_platform`` — ``pip --platform`` tag for manylinux wheels (bundled
+  metadata; ``gtk`` does not pass ``--platform`` to pip today)
 - ``python_packages`` — preinstalled package name → version pins
+- ``docker_image`` — official AWS Glue local Docker image for this release
 
 Bundled JSON is validated before release.
 :func:`load_runtime` is the public entry point; it raises
 :exc:`UnsupportedGlueVersionError` when a version file is missing.
 :mod:`aws_glue_toolkit.job` calls it when loading ``pyproject.toml`` into
 :attr:`~aws_glue_toolkit.job.GlueJobProject.runtime`.
-:mod:`aws_glue_toolkit.cli` and :mod:`aws_glue_toolkit.artifacts` consume
+:mod:`aws_glue_toolkit.app` and :mod:`aws_glue_toolkit.dependencies` consume
 :class:`GlueRuntimeMetadata` (or one loaded directly via
 :func:`load_runtime`).
 
-:mod:`aws_glue_toolkit.pip` uses the pins as constraints;
-:mod:`aws_glue_toolkit.artifacts` uses them to omit packages already on the
-Glue image.
+:mod:`aws_glue_toolkit.dependencies` uses ``docker_image`` and
+``python_packages`` (as constraints and to omit image-pinned packages when
+building gluewheels). ``core_engines``, ``table_formats``, and
+``pip_platform`` are loaded for callers but unused by ``gtk`` itself.
 
 Example::
 
@@ -96,9 +99,10 @@ class GlueRuntimeMetadata:
         glue_version: Glue version string (e.g. ``"5.1"``).
         core_engines: Spark, Python, and Scala versions.
         table_formats: Hudi, Iceberg, and Delta Lake versions.
-        pip_platform: ``pip --platform`` tag for manylinux wheels on Glue
-            workers.
+        pip_platform: Bundled ``pip --platform`` tag for manylinux wheels on
+            Glue workers (not passed to pip by ``gtk`` today).
         python_packages: Preinstalled package name → version.
+        docker_image: Official AWS Glue local Docker image for this release.
 
     """
 
@@ -107,6 +111,7 @@ class GlueRuntimeMetadata:
     table_formats: GlueTableFormats
     pip_platform: str
     python_packages: Mapping[str, str]
+    docker_image: str
 
 
 # --- Load ---
@@ -136,7 +141,7 @@ def load_runtime(glue_version: str) -> GlueRuntimeMetadata:
     if not resource.is_file():
         raise UnsupportedGlueVersionError(glue_version)
 
-    # Parse JSON and return frozen metadata.
+    # Parse JSON into frozen dataclasses.
     data = loads(resource.read_text(encoding="utf-8"))
     return GlueRuntimeMetadata(
         glue_version=data["glue_version"],
@@ -152,4 +157,5 @@ def load_runtime(glue_version: str) -> GlueRuntimeMetadata:
         ),
         pip_platform=data["pip_platform"],
         python_packages=data["python_packages"],
+        docker_image=data["docker_image"],
     )

@@ -1,5 +1,6 @@
 {
   "glue_version": "5.1",
+  "docker_image": "public.ecr.aws/glue/aws-glue-libs:5.1",
   "core_engines": {
     "spark": "3.5.6",
     "python": "3.11",

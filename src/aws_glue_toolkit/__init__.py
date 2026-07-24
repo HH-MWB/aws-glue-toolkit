@@ -2,12 +2,19 @@
 
 Modules:
 
-- :mod:`aws_glue_toolkit.artifacts` — build Glue job zip artifacts
-- :mod:`aws_glue_toolkit.cli` — ``gtk`` CLI (BSD ``sysexits.h`` exit codes)
+- :mod:`aws_glue_toolkit.app` — ``gtk`` check, build, run, and test
+  orchestration
+- :mod:`aws_glue_toolkit.artifacts` — Glue job zip artifact formats
+- :mod:`aws_glue_toolkit.cli` — ``gtk`` CLI (`check`, `build`, `run`, `test`)
+- :mod:`aws_glue_toolkit.dependencies` — dependency prep and pip resolution
+- :mod:`aws_glue_toolkit.docker` — run jobs, tests, and pip in the AWS Glue
+  local Docker image
 - :mod:`aws_glue_toolkit.job` — load job ``pyproject.toml`` and resolve
   Glue runtime into :class:`~aws_glue_toolkit.job.GlueJobProject`
-- :mod:`aws_glue_toolkit.pip` — ``pip`` resolution and wheel download
+- :mod:`aws_glue_toolkit.paths` — container mount paths and path mapping
 - :mod:`aws_glue_toolkit.runtime` — bundled per-version Glue runtime pins
+
+See ``docs/architecture.md`` for the two-layer layout (core and shell).
 
 Import submodules directly for library APIs (for example
 ``from aws_glue_toolkit.job import load_pyproject``).

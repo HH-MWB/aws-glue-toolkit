@@ -66,16 +66,13 @@ Each job is a directory containing `pyproject.toml`. Unknown keys are ignored. T
 | `tool.aws-glue-toolkit.script` | yes | — | Entry script, relative to `source` |
 | `tool.aws-glue-toolkit.tests` | no | `tests` | Test directory, relative to the job root |
 
-### Pip index URLs
+### Pip configuration
 
-During `gtk check`, `gtk build`, `gtk run`, and `gtk test`, `gtk` forwards these host environment variables into the Glue Docker container when they are set (for pip resolution, wheel bundling, or ephemeral install on run/test):
-
-| Variable | Effect |
-| --- | --- |
-| `PIP_INDEX_URL` | Primary package index (replaces PyPI when set) |
-| `PIP_EXTRA_INDEX_URL` | Additional indexes; space-separated URLs per [pip](https://pip.pypa.io/en/stable/topics/configuration/) |
+During `gtk check`, `gtk build`, `gtk run`, and `gtk test` (when dependencies are installed), `gtk` snapshots the host’s effective [pip configuration](https://pip.pypa.io/en/stable/topics/configuration/) into a temporary `pip.conf`, mounts it into the Glue Docker container, and sets `PIP_CONFIG_FILE` to that mounted file. Host config files and `PIP_*` environment variables are merged first (env overrides file, as pip does). Host `PIP_*` values are not forwarded into the container; only `PIP_CONFIG_FILE` is set, pointing at the snapshot.
 
 ```bash
+# Either works: config file or environment variable on the host
+# ~/.config/pip/pip.conf  →  [global] extra-index-url = https://my.company/simple
 export PIP_EXTRA_INDEX_URL="https://my.company/simple"
 gtk check .
 gtk build .
@@ -83,7 +80,7 @@ gtk run .
 gtk test .
 ```
 
-Private indexes often also require `PIP_TRUSTED_HOST`; that variable is not forwarded by `gtk` today.
+Host-local options such as `cache-dir`, `cert`, `client-cert`, `log`, and install path settings (`target`, `prefix`, `root`, `src`, `python`) are omitted from the snapshot so they do not point at host paths inside the container.
 
 ## Commands
 

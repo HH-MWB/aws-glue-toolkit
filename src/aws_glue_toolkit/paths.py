@@ -5,6 +5,8 @@ Single source for workspace and temporary mount constants used by
 
 :data:`RUN_WRAPPER_MOUNT` is the container path of the ``gtk run`` entry
 script (:mod:`aws_glue_toolkit.run_wrapper`).
+:data:`PIP_CONFIG_MOUNT` is the container path of the host pip.conf
+snapshot used for pip-in-container runs.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ if TYPE_CHECKING:
 __all__ = [
     "EXT_MOUNT_PREFIX",
     "GLUEWHEELS_STAGING_MOUNT",
+    "PIP_CONFIG_MOUNT",
     "PIP_WORK_MOUNT",
     "PYTHON_TARGET_MOUNT",
     "RUN_WRAPPER_MOUNT",
@@ -29,6 +32,7 @@ __all__ = [
 
 WORKSPACE_MOUNT = "/home/hadoop/workspace"
 PIP_WORK_MOUNT = "/tmp/gtk-pip-work"  # noqa: S108  # nosec B108
+PIP_CONFIG_MOUNT = "/tmp/gtk-pip.conf"  # noqa: S108  # nosec B108
 GLUEWHEELS_STAGING_MOUNT = "/tmp/gtk-staging"  # noqa: S108  # nosec B108
 PYTHON_TARGET_MOUNT = "/tmp/gtk-python"  # noqa: S108  # nosec B108
 RUN_WRAPPER_MOUNT = "/tmp/gtk-run-wrapper.py"  # noqa: S108  # nosec B108

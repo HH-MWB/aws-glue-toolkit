@@ -14,23 +14,30 @@ Public API: :func:`build_run_argv`, :func:`build_spark_submit_argv`,
 
 Mount constants :data:`~aws_glue_toolkit.paths.PIP_WORK_MOUNT` and
 :data:`~aws_glue_toolkit.paths.GLUEWHEELS_STAGING_MOUNT` are re-exported
-from :mod:`aws_glue_toolkit.paths` for backward compatibility.
+from :mod:`aws_glue_toolkit.paths` for backward compatibility. Host pip
+config is snapshotted to :data:`~aws_glue_toolkit.paths.PIP_CONFIG_MOUNT`
+inside the container.
 
 Note:
     ``# nosec B404`` — reviewed ``subprocess`` import; used only in
-    :func:`run_container` and :func:`run_container_capture`.
+    :func:`run_container`, :func:`run_container_capture`, and host
+    ``pip config list`` for the container pip.conf snapshot.
 
 """
 
 from __future__ import annotations
 
+from ast import literal_eval
+from collections import defaultdict
+from contextlib import contextmanager
 from importlib.resources import as_file, files
-from os import environ
 from pathlib import Path
 from shlex import join as shlex_join
 from shlex import quote as shlex_quote
 from shutil import which
 from subprocess import CompletedProcess, run  # nosec B404
+from sys import executable
+from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
 
 from aws_glue_toolkit.dependencies import (
@@ -40,6 +47,7 @@ from aws_glue_toolkit.dependencies import (
 )
 from aws_glue_toolkit.paths import (
     GLUEWHEELS_STAGING_MOUNT,
+    PIP_CONFIG_MOUNT,
     PIP_WORK_MOUNT,
     PYTHON_TARGET_MOUNT,
     RUN_WRAPPER_MOUNT,
@@ -49,7 +57,7 @@ from aws_glue_toolkit.paths import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterator, Sequence
 
     from aws_glue_toolkit.job import GlueJobProject
 
@@ -70,7 +78,20 @@ __all__ = [
 ]
 
 _DOCKER_PLATFORM = "linux/amd64"
-_PIP_INDEX_ENV = ("PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL")
+# Host-local / path-bound options omitted from the container pip.conf.
+_PIP_CONFIG_SKIP_KEYS = frozenset(
+    {
+        "cache-dir",
+        "cert",
+        "client-cert",
+        "log",
+        "prefix",
+        "python",
+        "root",
+        "src",
+        "target",
+    },
+)
 
 
 # --- Exceptions ---
@@ -214,7 +235,7 @@ def build_run_argv(
         "-i",
         "--platform",
         _DOCKER_PLATFORM,
-        # Optional host env pass-through (-e VAR copies value from host).
+        # -e VAR copies from host; -e VAR=value sets an explicit value.
         *[flag for var in env_forwards for flag in ("-e", var)],
         # Job root mounted read-write at the Glue workspace path.
         "-v",
@@ -233,6 +254,79 @@ def build_run_argv(
     ]
 
 
+# --- Host pip config snapshot ---
+
+
+def _parse_pip_config_list(stdout: str) -> dict[str, dict[str, str]]:
+    """Parse ``pip config list`` output into section → key → value.
+
+    ``:env:`` keys overwrite onto ``[global]`` (last write wins). Host-local
+    option names in :data:`_PIP_CONFIG_SKIP_KEYS` are omitted.
+    """
+    settings: dict[str, dict[str, str]] = defaultdict(dict)
+    for raw_line in stdout.splitlines():
+        line = raw_line.strip()
+        if "=" not in line:
+            continue
+        left, _, right = line.partition("=")
+        section, _, key = left.replace(":env:.", "global.", 1).partition(".")
+        if key not in _PIP_CONFIG_SKIP_KEYS:
+            settings[section][key] = literal_eval(right)
+    return settings
+
+
+def _pip_settings_to_ini(settings: dict[str, dict[str, str]]) -> str:
+    """Render section → key → value settings as pip.conf INI text."""
+    if not settings:
+        return ""
+    parts: list[str] = []
+    for section in sorted(settings):
+        parts.append(f"[{section}]")
+        parts.extend(
+            f"{key} = {value}"
+            for key, value in sorted(settings[section].items())
+        )
+        parts.append("")
+    return "\n".join(parts)
+
+
+def _host_pip_config_ini() -> str:
+    """Return filtered INI text from the host's effective pip config."""
+    try:
+        result = run(
+            [executable, "-m", "pip", "config", "list"],
+            check=False,
+            capture_output=True,
+            text=True,
+            shell=False,
+        )  # nosec B603
+    except OSError as exc:
+        raise DockerError(str(exc)) from exc
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise DockerError(
+            f"pip config list failed: {detail}"
+            if detail
+            else "pip config list failed",
+        )
+    return _pip_settings_to_ini(_parse_pip_config_list(result.stdout))
+
+
+@contextmanager
+def _host_pip_config_bind() -> Iterator[
+    tuple[tuple[Path, str], tuple[str, ...]]
+]:
+    """Yield a pip.conf volume mount and ``PIP_CONFIG_FILE`` env token."""
+    ini = _host_pip_config_ini()
+    with TemporaryDirectory() as tmp:
+        conf_path = Path(tmp) / "pip.conf"
+        conf_path.write_text(ini, encoding="utf-8")
+        yield (
+            (conf_path, PIP_CONFIG_MOUNT),
+            (f"PIP_CONFIG_FILE={PIP_CONFIG_MOUNT}",),
+        )
+
+
 # --- Subprocess shell ---
 
 
@@ -240,11 +334,6 @@ def _ensure_docker_available() -> None:
     if which("docker") is None:
         msg = "docker not found in PATH"
         raise DockerError(msg)
-
-
-def _pip_index_env_forwards() -> tuple[str, ...]:
-    """Host pip index env vars to forward into the container when set."""
-    return tuple(v for v in _PIP_INDEX_ENV if v in environ)
 
 
 def run_container(argv: Sequence[str]) -> int:
@@ -308,7 +397,10 @@ def run_pip_in_container(
     """Run ``python3 -m pip`` inside the Glue container.
 
     Rewrites absolute host paths in ``pip_args`` that fall under
-    ``volume_mounts`` to their container paths.
+    ``volume_mounts`` to their container paths. Mounts a snapshot of the
+    host's effective pip config at
+    :data:`~aws_glue_toolkit.paths.PIP_CONFIG_MOUNT` and sets
+    ``PIP_CONFIG_FILE`` to that path.
 
     Args:
         image: Glue local Docker image reference.
@@ -322,7 +414,8 @@ def run_pip_in_container(
         Completed subprocess result with captured stdout and stderr.
 
     Raises:
-        DockerError: ``docker`` is not on ``PATH`` or could not be started.
+        DockerError: ``docker`` is not on ``PATH``, could not be started,
+            or host ``pip config list`` failed.
 
     """
     resolved_mounts = [
@@ -333,15 +426,15 @@ def run_pip_in_container(
     # Map host paths in pip argv to container mount paths.
     mapped_args = [rewrite_path_arg(arg, resolved_mounts) for arg in pip_args]
 
-    argv = build_run_argv(
-        image,
-        project_dir,
-        build_pip_argv(mapped_args),
-        extra_volumes=resolved_mounts,
-        # Host pip index config (see README “Pip index URLs”).
-        env_forwards=_pip_index_env_forwards(),
-    )
-    return run_container_capture(argv)
+    with _host_pip_config_bind() as (pip_conf_mount, env_forwards):
+        argv = build_run_argv(
+            image,
+            project_dir,
+            build_pip_argv(mapped_args),
+            extra_volumes=[*resolved_mounts, pip_conf_mount],
+            env_forwards=env_forwards,
+        )
+        return run_container_capture(argv)
 
 
 def pip_runner(job: GlueJobProject) -> PipRunner:
@@ -386,7 +479,7 @@ def run_job(
         *job_args: Tokens forwarded to ``spark-submit`` after ``--JOB_NAME``.
         extra_volumes: Extra host→container binds (pip work, ``file:`` deps).
         install_deps: When true, pip-install job deps into the ephemeral
-            container before ``spark-submit`` and forward pip index env vars.
+            container before ``spark-submit`` and mount host pip config.
 
     Returns:
         Container exit code.
@@ -394,7 +487,10 @@ def run_job(
     """
     wrapper = files("aws_glue_toolkit").joinpath("run_wrapper.py")
     with as_file(wrapper) as wrapper_host:
-        volumes = [*extra_volumes, (Path(wrapper_host), RUN_WRAPPER_MOUNT)]
+        volumes: list[tuple[Path, str]] = [
+            *extra_volumes,
+            (Path(wrapper_host), RUN_WRAPPER_MOUNT),
+        ]
         if install_deps:
             container_command = build_install_and_spark_submit_argv(
                 job.project_dir,
@@ -402,23 +498,29 @@ def run_job(
                 job.name,
                 job_args,
             )
-            env_forwards = _pip_index_env_forwards()
-        else:
-            container_command = build_spark_submit_argv(
-                job.project_dir,
-                job.script,
-                job.name,
-                job_args,
-            )
-            env_forwards = ()
+            with _host_pip_config_bind() as (pip_conf_mount, env_forwards):
+                return run_container(
+                    build_run_argv(
+                        job.runtime.docker_image,
+                        job.project_dir,
+                        container_command,
+                        extra_volumes=[*volumes, pip_conf_mount],
+                        env_forwards=env_forwards,
+                    ),
+                )
 
+        container_command = build_spark_submit_argv(
+            job.project_dir,
+            job.script,
+            job.name,
+            job_args,
+        )
         return run_container(
             build_run_argv(
                 job.runtime.docker_image,
                 job.project_dir,
                 container_command,
                 extra_volumes=volumes,
-                env_forwards=env_forwards,
             ),
         )
 
@@ -437,7 +539,7 @@ def run_tests(
         *pytest_args: Tokens forwarded to ``pytest``.
         extra_volumes: Extra host→container binds (pip work, ``file:`` deps).
         install_deps: When true, pip-install job deps into the ephemeral
-            container before pytest and forward pip index env vars.
+            container before pytest and mount host pip config.
 
     Returns:
         Container exit code.
@@ -457,22 +559,28 @@ def run_tests(
             job.tests_dir,
             pytest_args,
         )
-        env_forwards = _pip_index_env_forwards()
-    else:
-        container_command = build_pytest_argv(
-            job.project_dir,
-            job.source_dir,
-            job.tests_dir,
-            pytest_args,
-        )
-        env_forwards = ()
+        with _host_pip_config_bind() as (pip_conf_mount, env_forwards):
+            return run_container(
+                build_run_argv(
+                    job.runtime.docker_image,
+                    job.project_dir,
+                    container_command,
+                    extra_volumes=[*extra_volumes, pip_conf_mount],
+                    env_forwards=env_forwards,
+                ),
+            )
 
+    container_command = build_pytest_argv(
+        job.project_dir,
+        job.source_dir,
+        job.tests_dir,
+        pytest_args,
+    )
     return run_container(
         build_run_argv(
             job.runtime.docker_image,
             job.project_dir,
             container_command,
             extra_volumes=extra_volumes,
-            env_forwards=env_forwards,
         ),
     )

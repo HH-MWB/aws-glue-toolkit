@@ -86,10 +86,10 @@ flowchart TB
 
 | Concern | Owner |
 | --- | --- |
-| Container mount paths | `paths.py` (`WORKSPACE_MOUNT`, `PIP_WORK_MOUNT`, `RUN_WRAPPER_MOUNT`, etc.) |
+| Container mount paths | `paths.py` (`WORKSPACE_MOUNT`, `PIP_WORK_MOUNT`, `PIP_CONFIG_MOUNT`, `RUN_WRAPPER_MOUNT`, etc.) |
 | Generic Docker I/O | `docker.run_pip_in_container`, `run_container`, `run_job`, `run_tests` |
 | Clean exit after job script | `run_wrapper.py` mounted by `docker.run_job` |
-| Host pip index env → container | `docker.run_pip_in_container` forwards `PIP_INDEX_URL` and `PIP_EXTRA_INDEX_URL` when set on the host |
+| Host pip config → container | `docker` snapshots effective host pip config (files + `PIP_*`, env wins) into a mounted `pip.conf` and sets `PIP_CONFIG_FILE`; skips host-local keys such as `cache-dir` |
 | pip-in-Docker adapter (exit codes → `PipError`) | `docker.pip_runner` via `dependencies.pip_error_from_returncode` |
 | Prepare `file:` deps for container pip | `dependencies.prepare_requirements` |
 | Resolve (dry-run) | `dependencies.resolve_packages` |

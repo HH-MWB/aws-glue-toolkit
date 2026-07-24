@@ -57,7 +57,7 @@ Put new business rules and transforms in core modules. Keep subprocess calls, ex
 Use [Conventional Commits](https://www.conventionalcommits.org/) for the subject line, for example:
 
 ```text
-feat(glue-runtime): add load_glue_runtime_metadata
+feat(runtime): add load_runtime
 fix: correct wheel packaging for data files
 docs: clarify GlueVersion in docstrings
 ```

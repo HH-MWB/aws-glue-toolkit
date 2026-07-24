@@ -50,7 +50,7 @@ gtk run .
 gtk test .
 ```
 
-`check` validates dependencies inside the official AWS Glue local Docker image. `build` writes deployment zips into the job directory; wheels are built or downloaded in the same image. `run` and `test` execute in that image (via `spark-submit` / pytest), mounting the job directory at `/home/hadoop/workspace` and installing `project.dependencies` into the ephemeral container when present. Tokens after the job directory are forwarded to the job or pytest. When the job or tests finish, the container exits and that exit code is returned as the process exit code.
+See [samples/README.md](samples/README.md) for a worked sample (Glue `5.0`).
 
 ## Configuration
 
@@ -68,23 +68,17 @@ Each job is a directory containing `pyproject.toml`. Unknown keys are ignored. T
 
 ### Pip configuration
 
-During `gtk check`, `gtk build`, `gtk run`, and `gtk test` (when dependencies are installed), `gtk` snapshots the host’s effective [pip configuration](https://pip.pypa.io/en/stable/topics/configuration/) into a temporary `pip.conf`, mounts it into the Glue Docker container, and sets `PIP_CONFIG_FILE` to that mounted file. Host config files and `PIP_*` environment variables are merged first (env overrides file, as pip does). Host `PIP_*` values are not forwarded into the container; only `PIP_CONFIG_FILE` is set, pointing at the snapshot.
+For container pip (`check`, `build`, and dep install on `run` / `test`), `gtk` snapshots the host’s effective [pip configuration](https://pip.pypa.io/en/stable/topics/configuration/) (files + `PIP_*`, env wins) into a temporary `pip.conf`, mounts it, and sets `PIP_CONFIG_FILE`. Host-local keys (`cache-dir`, `cert`, `target`, and similar) are omitted.
 
 ```bash
-# Either works: config file or environment variable on the host
-# ~/.config/pip/pip.conf  →  [global] extra-index-url = https://my.company/simple
+# ~/.config/pip/pip.conf  or:
 export PIP_EXTRA_INDEX_URL="https://my.company/simple"
 gtk check .
-gtk build .
-gtk run .
-gtk test .
 ```
-
-Host-local options such as `cache-dir`, `cert`, `client-cert`, `log`, and install path settings (`target`, `prefix`, `root`, `src`, `python`) are omitted from the snapshot so they do not point at host paths inside the container.
 
 ## Commands
 
-`[JOB-DIR]` is the job directory path, passed as a positional argument or with `--job-dir [JOB-DIR]` (default: `.`).
+`[JOB-DIR]` is the job directory path, passed as a positional argument or with `--job-dir [JOB-DIR]` (default: `.`). Docker must be available; the Glue image is pulled on first use. `gtk` never installs Docker.
 
 | Command | Usage |
 | --- | --- |
@@ -93,20 +87,20 @@ Host-local options such as `cache-dir`, `cert`, `client-cert`, `log`, and instal
 | run | `gtk run [JOB-DIR] [args...]` |
 | test | `gtk test [JOB-DIR] [pytest args...]` |
 
+For `run` / `test`: job dir mounted at `/home/hadoop/workspace`; non-empty `project.dependencies` install into an ephemeral `PYTHONPATH` target (Glue pins as constraints); stdio pass through; exit code is the container command’s (or pip’s if install fails). Same dependency forms as `check` / `build`.
+
 ### check
 
-Resolves `project.dependencies` inside the official AWS Glue local Docker image for `glue_version`, against the bundled runtime pins. Supports PyPI version pins, `file:` path references (including paths outside the job directory), and git/VCS direct URLs. Does not write files. Docker pulls the image on first use; `gtk` does not install Docker or pull images explicitly.
+Resolves `project.dependencies` in the Glue image for `glue_version` against bundled pins. Does not write files.
 
 ### build
 
-Writes a dependencies zip and a gluewheels zip to the job directory. The dependencies zip is assembled on the host from local `.py` files under `source`. The gluewheels zip runs `pip wheel` inside the official AWS Glue local Docker image for `glue_version`, building or downloading wheels for every resolved dependency (PyPI, `file:` path, or git/VCS). Path dependencies must be installable packages (`pyproject.toml` or `setup.py`); loose job modules belong under `source`, not in `dependencies`. Docker pulls the image on first use; `gtk` does not install Docker or pull images explicitly.
+Writes a dependencies zip (host: `.py` under `source`) and a gluewheels zip (`pip wheel` in the Glue image). Path deps must be installable packages (`pyproject.toml` or `setup.py`); loose job modules belong under `source`. Both zips are always written; gluewheels omits packages already pinned on the image at the same version.
 
 | File | Glue parameter | Contents |
 | --- | --- | --- |
-| `{name}-{version}.dependencies.zip` | `--extra-py-files` | `.py` files under the configured source directory, except the entry script |
-| `{name}-{version}.gluewheels.zip` | `--additional-python-modules` (Glue 5.0+) | `wheels/requirements.txt` and `*.whl` files per [AWS Glue Appendix A](https://docs.aws.amazon.com/glue/latest/dg/aws-glue-programming-python-libraries.html) |
-
-The gluewheels zip omits packages already pinned on the Glue image at the same version. Both zips are always written, even when empty.
+| `{name}-{version}.dependencies.zip` | `--extra-py-files` | `.py` files under `source`, except the entry script |
+| `{name}-{version}.gluewheels.zip` | `--additional-python-modules` (Glue 5.0+) | `wheels/requirements.txt` and `*.whl` per [AWS Glue Appendix A](https://docs.aws.amazon.com/glue/latest/dg/aws-glue-programming-python-libraries.html) |
 
 #### Dependency forms
 
@@ -115,21 +109,19 @@ The gluewheels zip omits packages already pinned on the Glue image at the same v
 | PyPI | `pydantic==2.13.4` | Version pins or ranges |
 | Path (in job) | `my-lib @ file:./libs/my-lib` | Built into a wheel at build time |
 | Path (monorepo) | `shared @ file:../packages/shared` | Mounted into the container at build time |
-| Git (HTTPS) | `tool @ git+https://github.com/org/tool.git@v1` | Requires container network access and `git` in the Glue image |
+| Git (HTTPS) | `tool @ git+https://github.com/org/tool.git@v1` | Needs network + `git` in the Glue image |
 
 Editable installs (`-e`) are rejected.
 
 ### run
 
-Runs the configured entry script with `spark-submit` inside the official AWS Glue local Docker image for `glue_version`. When `project.dependencies` is non-empty, `gtk` installs those packages into an ephemeral directory in the same container (with Glue runtime pins as constraints) and puts that directory on `PYTHONPATH` before `spark-submit`. Supports the same dependency forms as `check` / `build` (PyPI, `file:`, git/VCS). The job directory is mounted read-write at `/home/hadoop/workspace` with that path as the container working directory. `gtk` passes `--JOB_NAME` from `project.name` unless you supply your own `--JOB_NAME`. Any additional `--key value` tokens after `[JOB-DIR]` are forwarded to the job for `getResolvedOptions` (give an explicit `[JOB-DIR]` when passing extra args from the default directory). After the script finishes, `gtk` shuts down the Spark driver so the container returns and the process exit code matches the job (or pip's exit code if dependency install fails). Docker pulls the image on first use; `gtk` does not install Docker or pull images explicitly. Container stdout and stderr pass through unchanged.
+`spark-submit` on the entry script. Passes `--JOB_NAME` from `project.name` unless overridden. Extra `--key value` tokens after `[JOB-DIR]` go to `getResolvedOptions` (pass an explicit `[JOB-DIR]` when using `.`). Shuts down the Spark driver so the container returns.
 
 ### test
 
-Runs `python3 -m pytest` inside the official AWS Glue local Docker image for `glue_version`. When `project.dependencies` is non-empty, `gtk` installs those packages into an ephemeral directory in the same container (with Glue runtime pins as constraints) and puts that directory on `PYTHONPATH` before pytest. Supports the same dependency forms as `check` / `build` (PyPI, `file:`, git/VCS). The job directory is mounted read-write at `/home/hadoop/workspace` with that path as the container working directory. `gtk` sets `PYTHONPATH` to the configured `source` directory (and the install target when deps are present) and, with no extra tokens, runs pytest against the configured `tests` directory (default `tests`). When the first forwarded token is a pytest option (starts with `-`), that directory is still passed before the options (for example `gtk test . -v` runs `tests` with verbose output). When the first forwarded token is a path, only those tokens are passed to pytest. Docker pulls the image on first use; `gtk` does not install Docker or pull images explicitly. Container stdout and stderr pass through unchanged. When Docker launches successfully, the process exit code is pytest's exit code (for example `1` when tests fail), or pip's exit code if dependency install fails.
+`python3 -m pytest`. `PYTHONPATH` includes `source` (and the install target when deps are present). Default target is the configured `tests` dir; if the first forwarded token starts with `-`, that dir is still passed first (`gtk test . -v`); if it is a path, only those tokens go to pytest.
 
 ### Exit codes
-
-On failure, `gtk` uses BSD `sysexits.h` codes:
 
 | Code | Meaning |
 | --- | --- |
@@ -139,11 +131,11 @@ On failure, `gtk` uses BSD `sysexits.h` codes:
 | 70 | Build pipeline failed |
 | 78 | Invalid `pyproject.toml`, job layout, unsupported Glue version, or invalid dependency |
 
-Success exits `0`. Unhandled errors exit `1`. For `run` and `test`, when Docker launches successfully, the process exit code is the container command's exit code (not limited to the BSD codes above).
+Success is `0`; unhandled errors are `1`. For `run` / `test`, a successful Docker launch returns the container command’s exit code (not limited to the table above).
 
 ## Architecture
 
-Layered module layout (core, application, shell) is documented in
+Two-layer module layout (core and shell) is documented in
 [docs/architecture.md](docs/architecture.md).
 
 ## Contributing

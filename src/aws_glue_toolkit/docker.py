@@ -12,9 +12,7 @@ Public API: :func:`build_run_argv`, :func:`build_spark_submit_argv`,
 :func:`run_job`, :func:`run_tests`, :func:`pip_runner`,
 :exc:`DockerError`.
 
-Mount constants :data:`~aws_glue_toolkit.paths.PIP_WORK_MOUNT` and
-:data:`~aws_glue_toolkit.paths.GLUEWHEELS_STAGING_MOUNT` are re-exported
-from :mod:`aws_glue_toolkit.paths` for backward compatibility. Host pip
+Container mount paths live in :mod:`aws_glue_toolkit.paths`. Host pip
 config is snapshotted to :data:`~aws_glue_toolkit.paths.PIP_CONFIG_MOUNT`
 inside the container.
 
@@ -46,9 +44,7 @@ from aws_glue_toolkit.dependencies import (
     pip_install_target_args,
 )
 from aws_glue_toolkit.paths import (
-    GLUEWHEELS_STAGING_MOUNT,
     PIP_CONFIG_MOUNT,
-    PIP_WORK_MOUNT,
     PYTHON_TARGET_MOUNT,
     RUN_WRAPPER_MOUNT,
     WORKSPACE_MOUNT,
@@ -62,8 +58,6 @@ if TYPE_CHECKING:
     from aws_glue_toolkit.job import GlueJobProject
 
 __all__ = [
-    "GLUEWHEELS_STAGING_MOUNT",
-    "PIP_WORK_MOUNT",
     "DockerError",
     "build_pip_argv",
     "build_pytest_argv",

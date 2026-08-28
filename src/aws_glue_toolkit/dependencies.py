@@ -1,10 +1,9 @@
-"""Prepare and resolve Glue job dependencies via pip in Docker.
+"""Prepare and resolve Glue job dependencies via pip.
 
-Rewrites ``file:`` PEP 508 specs for container paths, runs ``pip install
---dry-run --report`` and ``pip wheel``, and filters wheels already pinned
-on the Glue image. Pass a :class:`PipRunner` from
-:mod:`aws_glue_toolkit.docker` to execute pip inside the official Glue
-local Docker image.
+Rewrites ``file:`` PEP 508 specs for container or host paths, runs
+``pip install --dry-run --report``, ``pip wheel``, and ``pip download``,
+and filters wheels already pinned on the Glue image. Pass a
+:class:`PipRunner` from :mod:`aws_glue_toolkit.docker` to execute pip.
 
 Public API: :class:`PreparedRequirements`, :func:`prepare_requirements`,
 :func:`staged_requirements`, :func:`pip_install_target_args`,
@@ -24,7 +23,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import unquote, urlparse
 
 from packaging.requirements import Requirement
-from packaging.utils import parse_wheel_filename
+from packaging.utils import canonicalize_name, parse_wheel_filename
 
 from aws_glue_toolkit.paths import (
     EXT_MOUNT_PREFIX,
@@ -123,7 +122,7 @@ def pip_error_from_returncode(
 
 @dataclass(frozen=True, slots=True)
 class PreparedRequirements:
-    """Dependency specs rewritten for pip inside the Glue container."""
+    """Dependency specs rewritten for container or host pip."""
 
     rewritten_specs: tuple[str, ...]
     extra_mounts: tuple[tuple[Path, str], ...]
@@ -132,17 +131,22 @@ class PreparedRequirements:
 def prepare_requirements(
     specs: Sequence[str],
     project_dir: Path,
+    *,
+    for_container: bool = True,
 ) -> PreparedRequirements:
-    """Rewrite ``file:`` deps to container paths and collect extra mounts.
+    """Prepare dependency specs for pip (container or host).
 
     Args:
         specs: PEP 508 requirement strings from ``project.dependencies``.
-        project_dir: Job root directory mounted at
+        project_dir: Job root directory. When ``for_container``, mounted at
             :data:`~aws_glue_toolkit.paths.WORKSPACE_MOUNT`.
+        for_container: When true (default), rewrite ``file:`` URLs to
+            container paths and collect extra mounts. When false, rewrite
+            to absolute host ``file://`` URLs with no mounts.
 
     Returns:
-        Rewritten specs and extra host→container mounts for paths outside
-        the workspace.
+        Rewritten specs and, when ``for_container``, extra host→container
+        mounts for paths outside the workspace.
 
     Raises:
         RequirementPreparationError: Editable installs or missing ``file:``
@@ -151,33 +155,55 @@ def prepare_requirements(
     """
     resolved_project = project_dir.resolve()
     mount_by_host: dict[Path, str] = {}
-    rewritten: list[str] = []
-
-    # Rewrite each spec; reject editable installs.
-    for spec in specs:
-        stripped = spec.strip()
-        if stripped.startswith(("-e ", "--editable")):
-            msg = "editable installs are not supported for Glue deployment"
-            raise RequirementPreparationError(msg)
-        rewritten.append(
-            _rewrite_file_spec(stripped, resolved_project, mount_by_host),
+    rewritten = tuple(
+        _prepare_one_spec(
+            spec.strip(),
+            resolved_project,
+            mount_by_host,
+            for_container=for_container,
         )
+        for spec in specs
+    )
+    return PreparedRequirements(
+        rewritten_specs=rewritten,
+        extra_mounts=_stable_extra_mounts(mount_by_host),
+    )
 
-    # Stable mount order for reproducible docker -v flags.
-    extra_mounts = tuple(
+
+def _prepare_one_spec(
+    spec: str,
+    project_dir: Path,
+    mount_by_host: dict[Path, str],
+    *,
+    for_container: bool,
+) -> str:
+    """Reject editables and rewrite one dependency spec."""
+    if spec.startswith(("-e ", "--editable")):
+        msg = "editable installs are not supported for Glue deployment"
+        raise RequirementPreparationError(msg)
+    if for_container:
+        return _rewrite_file_spec_for_container(
+            spec,
+            project_dir,
+            mount_by_host,
+        )
+    return _rewrite_file_spec_for_host(spec, project_dir)
+
+
+def _stable_extra_mounts(
+    mount_by_host: Mapping[Path, str],
+) -> tuple[tuple[Path, str], ...]:
+    """Stable mount order for reproducible docker ``-v`` flags."""
+    return tuple(
         (host_path, container_path)
         for host_path, container_path in sorted(
             mount_by_host.items(),
             key=lambda item: item[1],
         )
     )
-    return PreparedRequirements(
-        rewritten_specs=tuple(rewritten),
-        extra_mounts=extra_mounts,
-    )
 
 
-def _rewrite_file_spec(
+def _rewrite_file_spec_for_container(
     spec: str,
     project_dir: Path,
     mount_by_host: dict[Path, str],
@@ -199,6 +225,20 @@ def _rewrite_file_spec(
         mount_by_host,
     )
     return spec.replace(req.url, container_url, 1)
+
+
+def _rewrite_file_spec_for_host(spec: str, project_dir: Path) -> str:
+    """Rewrite one ``file:`` PEP 508 spec to an absolute host ``file:`` URL."""
+    req = Requirement(spec)
+    if req.url is None or not req.url.startswith("file:"):
+        return spec
+
+    host_path = _resolve_file_url(req.url, project_dir)
+    if not host_path.exists():
+        msg = f"dependency path does not exist: {host_path}"
+        raise RequirementPreparationError(msg)
+
+    return spec.replace(req.url, host_path.resolve().as_uri(), 1)
 
 
 def _resolve_file_url(url: str, project_dir: Path) -> Path:
@@ -384,53 +424,249 @@ def resolve_packages(
         }
 
 
-def bundle_wheels(
+def _python_version_tag(python_version: str) -> str:
+    """Return a pip ``--python-version`` tag (e.g. ``3.11`` → ``311``)."""
+    return "".join(python_version.split("."))
+
+
+def _is_direct_url_spec(spec: str) -> bool:
+    """Return true when ``spec`` is a path or VCS direct URL."""
+    return Requirement(spec).url is not None
+
+
+def _direct_url_specs(specs: Sequence[str]) -> tuple[str, ...]:
+    """Return specs that are path or VCS direct URLs."""
+    return tuple(spec for spec in specs if _is_direct_url_spec(spec))
+
+
+def _wheel_platforms(wheel_path: Path) -> frozenset[str]:
+    """Return platform tags from a wheel filename."""
+    _, _, _, tags = parse_wheel_filename(wheel_path.name)
+    return frozenset(tag.platform for tag in tags)
+
+
+def _wheel_is_portable(wheel_path: Path, pip_platform: str) -> bool:
+    """Return whether the wheel is portable for Glue workers."""
+    platforms = _wheel_platforms(wheel_path)
+    return "any" in platforms or pip_platform in platforms
+
+
+def _assert_wheels_portable(dest: Path, pip_platform: str) -> None:
+    """Raise :exc:`PipError` if any wheel in ``dest`` is not portable."""
+    for wheel_path in sorted(dest.glob("*.whl")):
+        if not _wheel_is_portable(wheel_path, pip_platform):
+            platforms = ", ".join(sorted(_wheel_platforms(wheel_path)))
+            msg = (
+                f"wheel {wheel_path.name} has platform tag(s) {platforms}; "
+                f"expected 'any' or {pip_platform!r} for --mode fast"
+            )
+            raise PipError(msg)
+
+
+def _cross_platform_download_args(
+    requirement_file: Path,
+    dest: Path,
+    runtime: GlueRuntimeMetadata,
+) -> list[str]:
+    """Build ``pip download`` argv for Glue platform tags."""
+    return [
+        "download",
+        "--requirement",
+        str(requirement_file),
+        "--constraint",
+        str(requirement_file.parent / "constraints.txt"),
+        "--dest",
+        str(dest),
+        "--platform",
+        runtime.pip_platform,
+        "--python-version",
+        _python_version_tag(runtime.core_engines.python),
+        "--only-binary=:all:",
+        "--no-cache-dir",
+    ]
+
+
+def _container_wheel_args(work: Path, dest: Path) -> list[str]:
+    """Build ``pip wheel`` argv for in-container packaging."""
+    return [
+        "wheel",
+        "--requirement",
+        str(work / "requirements.in"),
+        "--constraint",
+        str(work / "constraints.txt"),
+        "--wheel-dir",
+        str(dest),
+        "--no-cache-dir",
+    ]
+
+
+def _wheel_direct_url_deps(
+    work: Path,
+    dest: Path,
+    url_specs: Sequence[str],
+    *,
+    runner: PipRunner,
+    mounts: Sequence[tuple[Path, str]],
+) -> None:
+    """Build path/VCS deps with ``pip wheel --no-deps`` into ``dest``."""
+    direct_in = work / "direct.in"
+    direct_in.write_text("\n".join(url_specs), encoding="utf-8")
+    runner(
+        [
+            "wheel",
+            "--no-deps",
+            "--requirement",
+            str(direct_in),
+            "--constraint",
+            str(work / "constraints.txt"),
+            "--wheel-dir",
+            str(dest),
+            "--no-cache-dir",
+        ],
+        mounts,
+    )
+
+
+def _dry_run_install_report(
+    work: Path,
+    prepared: PreparedRequirements,
+    *,
+    runner: PipRunner,
+) -> dict[str, str]:
+    """Run ``pip install --dry-run --report``; return name → version."""
+    report_path = work / "report.json"
+    runner(
+        [
+            "install",
+            "--requirement",
+            str(work / "requirements.in"),
+            "--constraint",
+            str(work / "constraints.txt"),
+            "--dry-run",
+            "--ignore-installed",
+            "--quiet",
+            "--report",
+            str(report_path),
+        ],
+        _volume_mounts_for(work, prepared),
+    )
+    data = loads(report_path.read_text(encoding="utf-8"))
+    return {
+        item["metadata"]["name"]: item["metadata"]["version"]
+        for item in data["install"]
+    }
+
+
+def _wheel_names_in(dest: Path) -> frozenset[str]:
+    """Canonical package names for wheels already in ``dest``."""
+    return frozenset(
+        canonicalize_name(parse_wheel_filename(path.name)[0])
+        for path in dest.glob("*.whl")
+    )
+
+
+def _pins_missing_from_dest(
+    report: Mapping[str, str],
+    dest: Path,
+) -> list[str]:
+    """Return report pins that have no matching wheel in ``dest``."""
+    already = _wheel_names_in(dest)
+    return [
+        f"{name}=={version}"
+        for name, version in sorted(report.items())
+        if canonicalize_name(name) not in already
+    ]
+
+
+def _download_missing_after_urls(
+    work: Path,
+    dest: Path,
+    runtime: GlueRuntimeMetadata,
+    prepared: PreparedRequirements,
+    *,
+    runner: PipRunner,
+) -> None:
+    """Dry-run all specs; download pins not already in ``dest``."""
+    report = _dry_run_install_report(work, prepared, runner=runner)
+    missing = _pins_missing_from_dest(report, dest)
+    if not missing:
+        return
+    download_in = work / "download.in"
+    download_in.write_text("\n".join(missing), encoding="utf-8")
+    runner(
+        _cross_platform_download_args(download_in, dest, runtime),
+        _volume_mounts_for(work, prepared, staging_parent=dest.parent),
+    )
+
+
+def _run_cross_platform_phases(
+    work: Path,
+    dest: Path,
+    runtime: GlueRuntimeMetadata,
+    prepared: PreparedRequirements,
+    *,
+    runner: PipRunner,
+) -> None:
+    """Run host wheel/download phases inside an open pip workspace."""
+    url_specs = _direct_url_specs(prepared.rewritten_specs)
+    mounts = _volume_mounts_for(
+        work,
+        prepared,
+        staging_parent=dest.parent,
+    )
+    if not url_specs:
+        runner(
+            _cross_platform_download_args(
+                work / "requirements.in",
+                dest,
+                runtime,
+            ),
+            mounts,
+        )
+        return
+    _wheel_direct_url_deps(
+        work,
+        dest,
+        url_specs,
+        runner=runner,
+        mounts=mounts,
+    )
+    _assert_wheels_portable(dest, runtime.pip_platform)
+    _download_missing_after_urls(
+        work,
+        dest,
+        runtime,
+        prepared,
+        runner=runner,
+    )
+
+
+def _bundle_cross_platform(
     prepared: PreparedRequirements,
     runtime: GlueRuntimeMetadata,
     dest: Path,
     *,
     runner: PipRunner,
-) -> dict[str, str]:
-    """Build wheels for requirements and omit Glue image pins.
-
-    Args:
-        prepared: Dependency specs rewritten for container pip.
-        runtime: Glue runtime metadata (image pins used as constraints).
-        dest: Existing wheel output directory. ``gtk build`` passes the
-            ``wheels/`` directory created by
-            :func:`~aws_glue_toolkit.artifacts.stage_gluewheels_zip`
-            before yield.
-        runner: Callable that runs pip inside the Glue Docker image.
-
-    Returns:
-        Package name → version for wheels kept in ``dest`` (image pins
-        removed).
-
-    Raises:
-        PipError: ``pip wheel`` exited non-zero.
-
-    """
-    pins = runtime.python_packages
-    with _pip_workspace(prepared.rewritten_specs, pins) as work:
-        runner(
-            [
-                "wheel",
-                "--requirement",
-                str(work / "requirements.in"),
-                "--constraint",
-                str(work / "constraints.txt"),
-                "--wheel-dir",
-                str(dest),
-                "--no-cache-dir",
-            ],
-            _volume_mounts_for(
-                work,
-                prepared,
-                staging_parent=dest.parent,
-            ),
+) -> None:
+    """Wheel path/VCS deps, then download remaining packages for Glue."""
+    with _pip_workspace(
+        prepared.rewritten_specs,
+        runtime.python_packages,
+    ) as work:
+        _run_cross_platform_phases(
+            work,
+            dest,
+            runtime,
+            prepared,
+            runner=runner,
         )
 
-    # Drop wheels that match preinstalled Glue image pins.
+
+def _omit_pinned_wheels(
+    dest: Path,
+    pins: Mapping[str, str],
+) -> dict[str, str]:
+    """Delete Glue-pinned wheels in ``dest``; return kept name→version."""
     kept: dict[str, str] = {}
     for wheel_path in dest.glob("*.whl"):
         name, version, _, _ = parse_wheel_filename(wheel_path.name)
@@ -439,3 +675,48 @@ def bundle_wheels(
         else:
             kept[name] = str(version)
     return kept
+
+
+def bundle_wheels(
+    prepared: PreparedRequirements,
+    runtime: GlueRuntimeMetadata,
+    dest: Path,
+    *,
+    runner: PipRunner,
+    cross_platform: bool = False,
+) -> dict[str, str]:
+    """Build or download wheels for requirements and omit Glue image pins.
+
+    Args:
+        prepared: Dependency specs rewritten for container or host pip.
+        runtime: Glue runtime metadata (constraints; ``pip_platform`` /
+            Python version when ``cross_platform``).
+        dest: Existing wheel output directory from
+            :func:`~aws_glue_toolkit.artifacts.stage_gluewheels_zip`.
+        runner: Callable that runs pip (container or host).
+        cross_platform: When true, ``pip wheel --no-deps`` for path/VCS
+            then ``pip download --platform`` for the rest. When false,
+            ``pip wheel`` only.
+
+    Returns:
+        Package name → version for wheels kept in ``dest`` (image pins
+        removed).
+
+    Raises:
+        PipError: ``pip`` failed, or a path/VCS wheel is not portable.
+
+    """
+    pins = runtime.python_packages
+    if cross_platform:
+        _bundle_cross_platform(prepared, runtime, dest, runner=runner)
+    else:
+        with _pip_workspace(prepared.rewritten_specs, pins) as work:
+            runner(
+                _container_wheel_args(work, dest),
+                _volume_mounts_for(
+                    work,
+                    prepared,
+                    staging_parent=dest.parent,
+                ),
+            )
+    return _omit_pinned_wheels(dest, pins)

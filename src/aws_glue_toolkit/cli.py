@@ -21,6 +21,7 @@ Example::
 
     gtk check ./my-glue-job
     gtk build ./my-glue-job
+    gtk build ./my-glue-job --mode fast
     gtk run ./my-glue-job
     gtk test ./my-glue-job
 
@@ -36,6 +37,7 @@ from tomllib import TOMLDecodeError
 from typing import (
     TYPE_CHECKING,
     Annotated,
+    Literal,
     TypeAlias,
     TypeVar,
     Unpack,
@@ -319,29 +321,45 @@ def check(job: GlueJobProject) -> Panel:
     )
 
 
-@gtk_command
-def build(job: GlueJobProject) -> Panel:
+@app.command
+def build(
+    job_dir: DirectoryPath = Path(),
+    mode: Annotated[
+        Literal["fast"] | None,
+        Parameter(
+            name="--mode",
+            help="Package on the host. Default: pip wheel in the Glue image.",
+        ),
+    ] = None,
+) -> Panel | int:
     """Build gluewheels and dependencies zips under the job directory.
 
     Writes ``{name}-{version}.dependencies.zip`` and
-    ``{name}-{version}.gluewheels.zip``. Bundles wheels from PyPI, ``file:``
-    path, and git/VCS dependencies inside the official AWS Glue local Docker
-    image. Omits packages already pinned on the Glue image.
+    ``{name}-{version}.gluewheels.zip``. Default: ``pip wheel`` in the Glue
+    image. ``--mode fast``: host ``pip wheel --no-deps`` for path/VCS and
+    ``pip download --platform`` for other packages. Omits Glue image pins.
 
     """
     try:
-        project_dir = _handle_dependency_errors(lambda: build_job(job))
-    except (OSError, PipError) as err:
-        raise GtkCommandError(
-            GtkExitCode.SOFTWARE,
-            "Build failed",
-            str(err),
-        ) from None
-    return Panel(
-        f"Wrote zip files to {project_dir}.",
-        title="[bold green]Build complete[/]",
-        border_style="green",
-    )
+        job = _load_job_project(job_dir)
+        try:
+            project_dir = _handle_dependency_errors(
+                lambda: build_job(job, mode=mode),
+            )
+        except (OSError, PipError) as err:
+            raise GtkCommandError(
+                GtkExitCode.SOFTWARE,
+                "Build failed",
+                str(err),
+            ) from None
+        return Panel(
+            f"Wrote zip files to {project_dir}.",
+            title="[bold green]Build complete[/]",
+            border_style="green",
+        )
+    except GtkCommandError as err:
+        _print_command_error(err)
+        return int(err.exit_code)
 
 
 @gtk_command

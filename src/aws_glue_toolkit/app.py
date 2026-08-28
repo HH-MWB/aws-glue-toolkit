@@ -1,14 +1,14 @@
 """Application orchestration for ``gtk`` check, build, run, and test.
 
 Wires :mod:`aws_glue_toolkit.dependencies` to
-:mod:`aws_glue_toolkit.docker` for pip-in-container execution.
-No Rich panels, Cyclopts, or exit codes — callers in
-:mod:`aws_glue_toolkit.cli` map exceptions to user-facing output.
+:mod:`aws_glue_toolkit.docker` (container pip, or host pip for
+``build --mode fast``). No Rich panels, Cyclopts, or exit codes — callers
+in :mod:`aws_glue_toolkit.cli` map exceptions to user-facing output.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from aws_glue_toolkit.artifacts import (
     build_dependencies_zip,
@@ -21,7 +21,12 @@ from aws_glue_toolkit.dependencies import (
     resolve_packages,
     staged_requirements,
 )
-from aws_glue_toolkit.docker import pip_runner, run_job, run_tests
+from aws_glue_toolkit.docker import (
+    host_pip_runner,
+    pip_runner,
+    run_job,
+    run_tests,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -55,12 +60,18 @@ def check(job: GlueJobProject) -> None:
     )
 
 
-def build(job: GlueJobProject) -> Path:
+def build(
+    job: GlueJobProject,
+    *,
+    mode: Literal["fast"] | None = None,
+) -> Path:
     """Build dependencies and gluewheels zips under the job directory.
 
     Args:
         job: Resolved job config from
             :func:`~aws_glue_toolkit.job.load_pyproject`.
+        mode: ``"fast"`` packages on the host; omit for ``pip wheel`` in
+            the Glue Docker image.
 
     Returns:
         ``job.project_dir``.
@@ -78,15 +89,21 @@ def build(job: GlueJobProject) -> Path:
         job.project_dir / job.dependencies_zip_filename,
     )
 
-    # Gluewheels zip: bundle wheels in Docker, write requirements.txt, zip.
+    fast = mode == "fast"
+    # Gluewheels zip via Docker or host (--mode fast).
     with stage_gluewheels_zip(
         job.project_dir / job.gluewheels_zip_filename,
     ) as wheels_dir:
         packages = bundle_wheels(
-            prepared=prepare_requirements(job.dependencies, job.project_dir),
+            prepared=prepare_requirements(
+                job.dependencies,
+                job.project_dir,
+                for_container=not fast,
+            ),
             runtime=job.runtime,
             dest=wheels_dir,
-            runner=pip_runner(job),
+            runner=host_pip_runner() if fast else pip_runner(job),
+            cross_platform=fast,
         )
         write_gluewheels_tree(wheels_dir, packages)
     return job.project_dir

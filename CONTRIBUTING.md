@@ -70,7 +70,7 @@ docs: clarify GlueVersion in docstrings
 
 ## Testing
 
-There is no unit test suite in this repository yet. CI runs lint and type checks only (see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)). When validating changes manually, use Docker to run `gtk check`, `gtk build`, `gtk run`, or `gtk test` against a sample Glue job directory.
+There is no unit test suite in this repository yet. CI runs lint and type checks only (see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)). When validating changes manually, run `gtk check`, `gtk build`, `gtk run`, or `gtk test` against a sample Glue job directory (Docker for default build / run / test / check).
 
 ## Code of conduct
 

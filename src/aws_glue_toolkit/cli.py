@@ -336,8 +336,9 @@ def build(
 
     Writes ``{name}-{version}.dependencies.zip`` and
     ``{name}-{version}.gluewheels.zip``. Default: ``pip wheel`` in the Glue
-    image. ``--mode fast``: host ``pip wheel --no-deps`` for path/VCS and
-    ``pip download --platform`` for other packages. Omits Glue image pins.
+    image. ``--mode fast``: host ``pip wheel --no-deps`` for path/VCS;
+    ``pip download --platform`` or sdist→wheel for other packages
+    (portable tags only). Omits Glue image pins.
 
     """
     try:

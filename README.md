@@ -98,15 +98,9 @@ Resolves `project.dependencies` in the Glue image for `glue_version` against bun
 Writes a dependencies zip (host: `.py` under `source`) and a gluewheels zip.
 
 - **Default:** `pip wheel` in the Glue image (`linux/amd64`).
-- **`--mode fast`:** host packaging (no Docker). Path/VCS deps via
-  `pip wheel --no-deps` (wheel tags must be `any` or the Glue
-  `pip_platform`); other packages via `pip download --platform` with
-  `--only-binary=:all:` (bundled manylinux + Glue Python version). VCS
-  needs network and `git` on the host.
+- **`--mode fast`:** host packaging (no Docker). Path/VCS via `pip wheel --no-deps`; other packages via `pip download --platform --only-binary=:all:`, or sdist→wheel on the host when no compatible wheel exists. Wheels must be `any` or the Glue `pip_platform` (use default Docker build for compiled packages). VCS needs network and `git` on the host.
 
-Path deps must be installable packages (`pyproject.toml` or `setup.py`);
-loose job modules belong under `source`. Both zips are always written;
-gluewheels omits packages already pinned on the image at the same version.
+Path deps must be installable packages (`pyproject.toml` or `setup.py`); loose job modules belong under `source`. Both zips are always written; gluewheels omits packages already pinned on the image at the same version.
 
 | File | Glue parameter | Contents |
 | --- | --- | --- |

@@ -164,9 +164,17 @@ def prepare_requirements(
         )
         for spec in specs
     )
+    # Stable mount order for reproducible docker ``-v`` flags.
+    extra_mounts = tuple(
+        (host_path, container_path)
+        for host_path, container_path in sorted(
+            mount_by_host.items(),
+            key=lambda item: item[1],
+        )
+    )
     return PreparedRequirements(
         rewritten_specs=rewritten,
-        extra_mounts=_stable_extra_mounts(mount_by_host),
+        extra_mounts=extra_mounts,
     )
 
 
@@ -190,17 +198,24 @@ def _prepare_one_spec(
     return _rewrite_file_spec_for_host(spec, project_dir)
 
 
-def _stable_extra_mounts(
-    mount_by_host: Mapping[Path, str],
-) -> tuple[tuple[Path, str], ...]:
-    """Stable mount order for reproducible docker ``-v`` flags."""
-    return tuple(
-        (host_path, container_path)
-        for host_path, container_path in sorted(
-            mount_by_host.items(),
-            key=lambda item: item[1],
-        )
-    )
+def _existing_file_dep_path(
+    spec: str,
+    project_dir: Path,
+) -> tuple[Path, str] | None:
+    """Return ``(host_path, file_url)`` for a ``file:`` dep, else None.
+
+    Raises:
+        RequirementPreparationError: The ``file:`` path does not exist.
+
+    """
+    req = Requirement(spec)
+    if req.url is None or not req.url.startswith("file:"):
+        return None
+    host_path = _resolve_file_url(req.url, project_dir)
+    if not host_path.exists():
+        msg = f"dependency path does not exist: {host_path}"
+        raise RequirementPreparationError(msg)
+    return host_path, req.url
 
 
 def _rewrite_file_spec_for_container(
@@ -209,36 +224,25 @@ def _rewrite_file_spec_for_container(
     mount_by_host: dict[Path, str],
 ) -> str:
     """Rewrite one ``file:`` PEP 508 spec to a container ``file:`` URL."""
-    req = Requirement(spec)
-    if req.url is None or not req.url.startswith("file:"):
+    resolved = _existing_file_dep_path(spec, project_dir)
+    if resolved is None:
         return spec
-
-    # Resolve host path and fail fast when the target is missing.
-    host_path = _resolve_file_url(req.url, project_dir)
-    if not host_path.exists():
-        msg = f"dependency path does not exist: {host_path}"
-        raise RequirementPreparationError(msg)
-
+    host_path, file_url = resolved
     container_url = _container_file_url(
         host_path,
         project_dir,
         mount_by_host,
     )
-    return spec.replace(req.url, container_url, 1)
+    return spec.replace(file_url, container_url, 1)
 
 
 def _rewrite_file_spec_for_host(spec: str, project_dir: Path) -> str:
     """Rewrite one ``file:`` PEP 508 spec to an absolute host ``file:`` URL."""
-    req = Requirement(spec)
-    if req.url is None or not req.url.startswith("file:"):
+    resolved = _existing_file_dep_path(spec, project_dir)
+    if resolved is None:
         return spec
-
-    host_path = _resolve_file_url(req.url, project_dir)
-    if not host_path.exists():
-        msg = f"dependency path does not exist: {host_path}"
-        raise RequirementPreparationError(msg)
-
-    return spec.replace(req.url, host_path.resolve().as_uri(), 1)
+    host_path, file_url = resolved
+    return spec.replace(file_url, host_path.resolve().as_uri(), 1)
 
 
 def _resolve_file_url(url: str, project_dir: Path) -> Path:
@@ -400,131 +404,7 @@ def resolve_packages(
         prepared.rewritten_specs,
         runtime.python_packages,
     ) as work:
-        runner(
-            [
-                "install",
-                "--requirement",
-                str(work / "requirements.in"),
-                "--constraint",
-                str(work / "constraints.txt"),
-                "--dry-run",
-                "--ignore-installed",
-                "--quiet",
-                "--report",
-                str(work / "report.json"),
-            ],
-            _volume_mounts_for(work, prepared),
-        )
-
-        # Parse pip's JSON install report.
-        data = loads((work / "report.json").read_text(encoding="utf-8"))
-        return {
-            item["metadata"]["name"]: item["metadata"]["version"]
-            for item in data["install"]
-        }
-
-
-def _python_version_tag(python_version: str) -> str:
-    """Return a pip ``--python-version`` tag (e.g. ``3.11`` → ``311``)."""
-    return "".join(python_version.split("."))
-
-
-def _is_direct_url_spec(spec: str) -> bool:
-    """Return true when ``spec`` is a path or VCS direct URL."""
-    return Requirement(spec).url is not None
-
-
-def _direct_url_specs(specs: Sequence[str]) -> tuple[str, ...]:
-    """Return specs that are path or VCS direct URLs."""
-    return tuple(spec for spec in specs if _is_direct_url_spec(spec))
-
-
-def _wheel_platforms(wheel_path: Path) -> frozenset[str]:
-    """Return platform tags from a wheel filename."""
-    _, _, _, tags = parse_wheel_filename(wheel_path.name)
-    return frozenset(tag.platform for tag in tags)
-
-
-def _wheel_is_portable(wheel_path: Path, pip_platform: str) -> bool:
-    """Return whether the wheel is portable for Glue workers."""
-    platforms = _wheel_platforms(wheel_path)
-    return "any" in platforms or pip_platform in platforms
-
-
-def _assert_wheels_portable(dest: Path, pip_platform: str) -> None:
-    """Raise :exc:`PipError` if any wheel in ``dest`` is not portable."""
-    for wheel_path in sorted(dest.glob("*.whl")):
-        if not _wheel_is_portable(wheel_path, pip_platform):
-            platforms = ", ".join(sorted(_wheel_platforms(wheel_path)))
-            msg = (
-                f"wheel {wheel_path.name} has platform tag(s) {platforms}; "
-                f"expected 'any' or {pip_platform!r} for --mode fast"
-            )
-            raise PipError(msg)
-
-
-def _cross_platform_download_args(
-    requirement_file: Path,
-    dest: Path,
-    runtime: GlueRuntimeMetadata,
-) -> list[str]:
-    """Build ``pip download`` argv for Glue platform tags."""
-    return [
-        "download",
-        "--requirement",
-        str(requirement_file),
-        "--constraint",
-        str(requirement_file.parent / "constraints.txt"),
-        "--dest",
-        str(dest),
-        "--platform",
-        runtime.pip_platform,
-        "--python-version",
-        _python_version_tag(runtime.core_engines.python),
-        "--only-binary=:all:",
-        "--no-cache-dir",
-    ]
-
-
-def _container_wheel_args(work: Path, dest: Path) -> list[str]:
-    """Build ``pip wheel`` argv for in-container packaging."""
-    return [
-        "wheel",
-        "--requirement",
-        str(work / "requirements.in"),
-        "--constraint",
-        str(work / "constraints.txt"),
-        "--wheel-dir",
-        str(dest),
-        "--no-cache-dir",
-    ]
-
-
-def _wheel_direct_url_deps(
-    work: Path,
-    dest: Path,
-    url_specs: Sequence[str],
-    *,
-    runner: PipRunner,
-    mounts: Sequence[tuple[Path, str]],
-) -> None:
-    """Build path/VCS deps with ``pip wheel --no-deps`` into ``dest``."""
-    direct_in = work / "direct.in"
-    direct_in.write_text("\n".join(url_specs), encoding="utf-8")
-    runner(
-        [
-            "wheel",
-            "--no-deps",
-            "--requirement",
-            str(direct_in),
-            "--constraint",
-            str(work / "constraints.txt"),
-            "--wheel-dir",
-            str(dest),
-            "--no-cache-dir",
-        ],
-        mounts,
-    )
+        return _dry_run_install_report(work, prepared, runner=runner)
 
 
 def _dry_run_install_report(
@@ -557,11 +437,50 @@ def _dry_run_install_report(
     }
 
 
-def _wheel_names_in(dest: Path) -> frozenset[str]:
-    """Canonical package names for wheels already in ``dest``."""
-    return frozenset(
-        canonicalize_name(parse_wheel_filename(path.name)[0])
-        for path in dest.glob("*.whl")
+def _assert_wheels_portable(dest: Path, pip_platform: str) -> None:
+    """Raise :exc:`PipError` if any wheel in ``dest`` is not portable."""
+    for wheel_path in sorted(dest.glob("*.whl")):
+        _, _, _, tags = parse_wheel_filename(wheel_path.name)
+        platforms = frozenset(tag.platform for tag in tags)
+        if "any" in platforms or pip_platform in platforms:
+            continue
+        msg = (
+            f"wheel {wheel_path.name} has platform tag(s) "
+            f"{', '.join(sorted(platforms))}; "
+            f"expected 'any' or {pip_platform!r} for --mode fast"
+        )
+        raise PipError(msg)
+
+
+def _wheel_direct_url_deps(
+    work: Path,
+    dest: Path,
+    specs: Sequence[str],
+    *,
+    runner: PipRunner,
+    mounts: Sequence[tuple[Path, str]],
+) -> None:
+    """Wheel every path/VCS dep in ``specs`` into ``dest`` (no-op if none)."""
+    url_specs = tuple(
+        spec for spec in specs if Requirement(spec).url is not None
+    )
+    if not url_specs:
+        return
+    direct_in = work / "direct.in"
+    direct_in.write_text("\n".join(url_specs), encoding="utf-8")
+    runner(
+        [
+            "wheel",
+            "--no-deps",
+            "--requirement",
+            str(direct_in),
+            "--constraint",
+            str(work / "constraints.txt"),
+            "--wheel-dir",
+            str(dest),
+            "--no-cache-dir",
+        ],
+        mounts,
     )
 
 
@@ -570,7 +489,10 @@ def _pins_missing_from_dest(
     dest: Path,
 ) -> list[str]:
     """Return report pins that have no matching wheel in ``dest``."""
-    already = _wheel_names_in(dest)
+    already = frozenset(
+        canonicalize_name(parse_wheel_filename(path.name)[0])
+        for path in dest.glob("*.whl")
+    )
     return [
         f"{name}=={version}"
         for name, version in sorted(report.items())
@@ -578,67 +500,79 @@ def _pins_missing_from_dest(
     ]
 
 
-def _download_missing_after_urls(
+def _wheel_pin_from_sdist(
     work: Path,
     dest: Path,
-    runtime: GlueRuntimeMetadata,
-    prepared: PreparedRequirements,
+    pin_in: Path,
     *,
     runner: PipRunner,
 ) -> None:
-    """Dry-run all specs; download pins not already in ``dest``."""
-    report = _dry_run_install_report(work, prepared, runner=runner)
-    missing = _pins_missing_from_dest(report, dest)
-    if not missing:
-        return
-    download_in = work / "download.in"
-    download_in.write_text("\n".join(missing), encoding="utf-8")
+    """Download one pin without platform tags and wheel any sdist."""
     runner(
-        _cross_platform_download_args(download_in, dest, runtime),
-        _volume_mounts_for(work, prepared, staging_parent=dest.parent),
+        [
+            "download",
+            "--no-deps",
+            "--requirement",
+            str(pin_in),
+            "--constraint",
+            str(work / "constraints.txt"),
+            "--dest",
+            str(dest),
+            "--no-cache-dir",
+        ],
+        (),
     )
+    for sdist in sorted(dest.glob("*.tar.gz")):
+        runner(
+            [
+                "wheel",
+                "--no-deps",
+                "--wheel-dir",
+                str(dest),
+                "--no-cache-dir",
+                str(sdist),
+            ],
+            (),
+        )
+        sdist.unlink()
 
 
-def _run_cross_platform_phases(
+def _ensure_pin_wheel(
     work: Path,
     dest: Path,
+    pin: str,
     runtime: GlueRuntimeMetadata,
-    prepared: PreparedRequirements,
     *,
     runner: PipRunner,
 ) -> None:
-    """Run host wheel/download phases inside an open pip workspace."""
-    url_specs = _direct_url_specs(prepared.rewritten_specs)
-    mounts = _volume_mounts_for(
-        work,
-        prepared,
-        staging_parent=dest.parent,
-    )
-    if not url_specs:
+    """Ensure one pin has a wheel in ``dest`` (binary, else sdist→wheel)."""
+    pin_in = work / "pin.in"
+    pin_in.write_text(pin + "\n", encoding="utf-8")
+    try:
         runner(
-            _cross_platform_download_args(
-                work / "requirements.in",
-                dest,
-                runtime,
-            ),
-            mounts,
+            [
+                "download",
+                "--no-deps",
+                "--requirement",
+                str(pin_in),
+                "--constraint",
+                str(work / "constraints.txt"),
+                "--dest",
+                str(dest),
+                "--platform",
+                runtime.pip_platform,
+                "--python-version",
+                "".join(runtime.core_engines.python.split(".")),
+                "--only-binary=:all:",
+                "--no-cache-dir",
+            ],
+            (),
         )
-        return
-    _wheel_direct_url_deps(
-        work,
-        dest,
-        url_specs,
-        runner=runner,
-        mounts=mounts,
-    )
-    _assert_wheels_portable(dest, runtime.pip_platform)
-    _download_missing_after_urls(
-        work,
-        dest,
-        runtime,
-        prepared,
-        runner=runner,
-    )
+    except PipError as err:
+        detail = f"{err.stderr or ''}{err.stdout or ''}{err}".lower()
+        if "no matching distribution found" not in detail:
+            raise
+        _wheel_pin_from_sdist(work, dest, pin_in, runner=runner)
 
 
 def _bundle_cross_platform(
@@ -648,17 +582,63 @@ def _bundle_cross_platform(
     *,
     runner: PipRunner,
 ) -> None:
-    """Wheel path/VCS deps, then download remaining packages for Glue."""
+    """Wheel path/VCS deps, then ensure a portable wheel per resolved pin."""
     with _pip_workspace(
         prepared.rewritten_specs,
         runtime.python_packages,
     ) as work:
-        _run_cross_platform_phases(
+        mounts = _volume_mounts_for(
+            work,
+            prepared,
+            staging_parent=dest.parent,
+        )
+        _wheel_direct_url_deps(
             work,
             dest,
-            runtime,
-            prepared,
+            prepared.rewritten_specs,
             runner=runner,
+            mounts=mounts,
+        )
+        report = _dry_run_install_report(work, prepared, runner=runner)
+        for pin in _pins_missing_from_dest(report, dest):
+            _ensure_pin_wheel(
+                work,
+                dest,
+                pin,
+                runtime,
+                runner=runner,
+            )
+        _assert_wheels_portable(dest, runtime.pip_platform)
+
+
+def _bundle_in_container(
+    prepared: PreparedRequirements,
+    runtime: GlueRuntimeMetadata,
+    dest: Path,
+    *,
+    runner: PipRunner,
+) -> None:
+    """Build all wheels with ``pip wheel`` in the Glue container."""
+    with _pip_workspace(
+        prepared.rewritten_specs,
+        runtime.python_packages,
+    ) as work:
+        runner(
+            [
+                "wheel",
+                "--requirement",
+                str(work / "requirements.in"),
+                "--constraint",
+                str(work / "constraints.txt"),
+                "--wheel-dir",
+                str(dest),
+                "--no-cache-dir",
+            ],
+            _volume_mounts_for(
+                work,
+                prepared,
+                staging_parent=dest.parent,
+            ),
         )
 
 
@@ -694,29 +674,20 @@ def bundle_wheels(
         dest: Existing wheel output directory from
             :func:`~aws_glue_toolkit.artifacts.stage_gluewheels_zip`.
         runner: Callable that runs pip (container or host).
-        cross_platform: When true, ``pip wheel --no-deps`` for path/VCS
-            then ``pip download --platform`` for the rest. When false,
-            ``pip wheel`` only.
+        cross_platform: When true, path/VCS via ``pip wheel --no-deps``,
+            then per pin ``pip download --platform`` or sdist→wheel.
+            When false, ``pip wheel`` only.
 
     Returns:
         Package name → version for wheels kept in ``dest`` (image pins
         removed).
 
     Raises:
-        PipError: ``pip`` failed, or a path/VCS wheel is not portable.
+        PipError: ``pip`` failed, or a wheel is not portable for Glue.
 
     """
-    pins = runtime.python_packages
     if cross_platform:
         _bundle_cross_platform(prepared, runtime, dest, runner=runner)
     else:
-        with _pip_workspace(prepared.rewritten_specs, pins) as work:
-            runner(
-                _container_wheel_args(work, dest),
-                _volume_mounts_for(
-                    work,
-                    prepared,
-                    staging_parent=dest.parent,
-                ),
-            )
-    return _omit_pinned_wheels(dest, pins)
+        _bundle_in_container(prepared, runtime, dest, runner=runner)
+    return _omit_pinned_wheels(dest, runtime.python_packages)

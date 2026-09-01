@@ -50,8 +50,6 @@ gtk run .
 gtk test .
 ```
 
-See [samples/README.md](samples/README.md) for a worked sample (Glue `5.0`).
-
 ## Configuration
 
 Each job is a directory containing `pyproject.toml`. Unknown keys are ignored. The `source` directory and entry `script` must exist before `gtk` runs.

@@ -26,7 +26,7 @@ Process boundaries and use-case orchestration:
 | --- | --- | --- |
 | **Infra** | `docker.py` | `docker run` argv builders, `run_job`, `run_tests`, `run_pip_in_container`, `pip_runner`, `host_pip_runner`; host pip config snapshot → mounted `pip.conf` |
 | **Infra** | `run_wrapper.py` | `spark-submit` entry for `gtk run`; clean container exit after the job |
-| **Application** | `app.py` | `check`, `build`, `run`, `test`; wires `dependencies` to Docker |
+| **Application** | `app.py` | `check`, `build`, `run`, `test`; wires `dependencies` to host or container pip runners |
 | **Presentation** | `cli.py` | `gtk` entry point, `GtkCommandError`, exit codes, Rich panels |
 
 `app` raises domain exceptions (`PipError`, `DockerError`, `ValueError`,

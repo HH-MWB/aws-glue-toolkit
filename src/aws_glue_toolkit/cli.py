@@ -4,6 +4,7 @@ Commands:
 
 - ``check`` — resolve dependencies in the official AWS Glue local Docker image
 - ``build`` — write ``.gluewheels.zip`` and ``.dependencies.zip`` artifacts
+  (default ``--mode host``; ``--mode container`` uses the Glue image)
 - ``run`` — execute the job in the official AWS Glue local Docker image
 - ``test`` — run pytest in the official AWS Glue local Docker image
 

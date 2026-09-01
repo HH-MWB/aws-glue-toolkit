@@ -1,8 +1,9 @@
 """Application orchestration for ``gtk`` check, build, run, and test.
 
 Wires :mod:`aws_glue_toolkit.dependencies` to
-:mod:`aws_glue_toolkit.docker` (container pip, or host pip for
-``build --mode host``). No Rich panels, Cyclopts, or exit codes — callers
+:mod:`aws_glue_toolkit.docker` (host pip for ``build --mode host``,
+container pip for ``build --mode container``, ``check``, ``run``, and
+``test``). No Rich panels, Cyclopts, or exit codes — callers
 in :mod:`aws_glue_toolkit.cli` map exceptions to user-facing output.
 """
 

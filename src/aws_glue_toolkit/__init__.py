@@ -7,8 +7,8 @@ Modules:
 - :mod:`aws_glue_toolkit.artifacts` — Glue job zip artifact formats
 - :mod:`aws_glue_toolkit.cli` — ``gtk`` CLI (`check`, `build`, `run`, `test`)
 - :mod:`aws_glue_toolkit.dependencies` — dependency prep and pip resolution
-- :mod:`aws_glue_toolkit.docker` — run jobs, tests, and pip in the AWS Glue
-  local Docker image
+- :mod:`aws_glue_toolkit.docker` — Glue container subprocesses and
+  :func:`~aws_glue_toolkit.docker.host_pip_runner`
 - :mod:`aws_glue_toolkit.job` — load job ``pyproject.toml`` and resolve
   Glue runtime into :class:`~aws_glue_toolkit.job.GlueJobProject`
 - :mod:`aws_glue_toolkit.paths` — container mount paths and path mapping

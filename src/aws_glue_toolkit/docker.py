@@ -1,5 +1,8 @@
 """Run Glue jobs, tests, and pip in the official AWS Glue local Docker image.
 
+Also exposes :func:`host_pip_runner` for host-side pip (``gtk build
+--mode host``).
+
 Pure builders produce ``docker run``, ``spark-submit``, ``pytest``, and pip
 argv lists; :func:`run_container` and :func:`run_container_capture` are the
 subprocess shells. :func:`run_job` mounts

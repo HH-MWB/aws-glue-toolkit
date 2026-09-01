@@ -2,7 +2,7 @@
 
 Wires :mod:`aws_glue_toolkit.dependencies` to
 :mod:`aws_glue_toolkit.docker` (container pip, or host pip for
-``build --mode fast``). No Rich panels, Cyclopts, or exit codes — callers
+``build --mode host``). No Rich panels, Cyclopts, or exit codes — callers
 in :mod:`aws_glue_toolkit.cli` map exceptions to user-facing output.
 """
 
@@ -63,15 +63,15 @@ def check(job: GlueJobProject) -> None:
 def build(
     job: GlueJobProject,
     *,
-    mode: Literal["fast"] | None = None,
+    mode: Literal["host", "container"],
 ) -> Path:
     """Build dependencies and gluewheels zips under the job directory.
 
     Args:
         job: Resolved job config from
             :func:`~aws_glue_toolkit.job.load_pyproject`.
-        mode: ``"fast"`` packages on the host; omit for ``pip wheel`` in
-            the Glue Docker image.
+        mode: ``"host"`` packages with host pip; ``"container"`` runs
+            ``pip wheel`` in the Glue Docker image (worker-arch).
 
     Returns:
         ``job.project_dir``.
@@ -89,8 +89,8 @@ def build(
         job.project_dir / job.dependencies_zip_filename,
     )
 
-    fast = mode == "fast"
-    # Gluewheels zip via Docker or host (--mode fast).
+    host = mode == "host"
+    # Gluewheels zip via host pip (--mode host) or Docker (--mode container).
     with stage_gluewheels_zip(
         job.project_dir / job.gluewheels_zip_filename,
     ) as wheels_dir:
@@ -98,12 +98,12 @@ def build(
             prepared=prepare_requirements(
                 job.dependencies,
                 job.project_dir,
-                for_container=not fast,
+                for_container=not host,
             ),
             runtime=job.runtime,
             dest=wheels_dir,
-            runner=host_pip_runner() if fast else pip_runner(job),
-            cross_platform=fast,
+            runner=host_pip_runner() if host else pip_runner(job),
+            cross_platform=host,
         )
         write_gluewheels_tree(wheels_dir, packages)
     return job.project_dir

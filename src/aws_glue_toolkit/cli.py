@@ -21,7 +21,7 @@ Example::
 
     gtk check ./my-glue-job
     gtk build ./my-glue-job
-    gtk build ./my-glue-job --mode fast
+    gtk build ./my-glue-job --mode container
     gtk run ./my-glue-job
     gtk test ./my-glue-job
 
@@ -325,20 +325,24 @@ def check(job: GlueJobProject) -> Panel:
 def build(
     job_dir: DirectoryPath = Path(),
     mode: Annotated[
-        Literal["fast"] | None,
+        Literal["host", "container"],
         Parameter(
             name="--mode",
-            help="Package on the host. Default: pip wheel in the Glue image.",
+            help=(
+                "Where to package wheels: host pip (default) or Glue "
+                "container (worker-arch; needs Docker)."
+            ),
         ),
-    ] = None,
+    ] = "host",
 ) -> Panel | int:
     """Build gluewheels and dependencies zips under the job directory.
 
     Writes ``{name}-{version}.dependencies.zip`` and
-    ``{name}-{version}.gluewheels.zip``. Default: ``pip wheel`` in the Glue
-    image. ``--mode fast``: host ``pip wheel --no-deps`` for path/VCS;
-    ``pip download --platform`` or sdist→wheel for other packages
-    (portable tags only). Omits Glue image pins.
+    ``{name}-{version}.gluewheels.zip``. Default ``--mode host``: host
+    ``pip wheel --no-deps`` for path/VCS; ``pip download --platform`` or
+    sdist→wheel for other packages (portable tags only). ``--mode
+    container``: ``pip wheel`` in the Glue image (worker-arch). Omits Glue
+    image pins.
 
     """
     try:

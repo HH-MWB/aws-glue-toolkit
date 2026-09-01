@@ -84,9 +84,9 @@ flowchart TB
 2. `app.build` → `dependencies.prepare_requirements`
 3. `artifacts.stage_gluewheels_zip` → `dependencies.bundle_wheels` → `artifacts.write_gluewheels_tree` → zip
 
-Default: `pip wheel` in Docker via `pip_runner`; omit Glue image pins.
+Default ``--mode host``: host `file:` paths, `host_pip_runner`; recipe is path/VCS `pip wheel --no-deps` → resolve pins → per pin `pip download --only-binary` or sdist→wheel → portable assert; same pin omit.
 
-`--mode fast`: host `file:` paths, `host_pip_runner`; recipe is path/VCS `pip wheel --no-deps` → resolve pins → per pin `pip download --only-binary` or sdist→wheel → portable assert; same pin omit.
+``--mode container``: `pip wheel` in Docker via `pip_runner`; omit Glue image pins.
 
 ### `gtk run` / `gtk test`
 

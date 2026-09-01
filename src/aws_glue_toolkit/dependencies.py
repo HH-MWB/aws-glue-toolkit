@@ -447,7 +447,7 @@ def _assert_wheels_portable(dest: Path, pip_platform: str) -> None:
         msg = (
             f"wheel {wheel_path.name} has platform tag(s) "
             f"{', '.join(sorted(platforms))}; "
-            f"expected 'any' or {pip_platform!r} for --mode fast"
+            f"expected 'any' or {pip_platform!r} for --mode host"
         )
         raise PipError(msg)
 

@@ -6,7 +6,7 @@ A streamlined CLI utility designed to simplify the AWS Glue development lifecycl
 
 ## Installation
 
-Requires Python 3.11+ and [Docker](https://docs.docker.com/get-docker/) for most `gtk` commands (`check`, default `build`, `run`, `test`; assumed installed, never installed by `gtk`). Installing the package adds the `gtk` command and a compatible `pip` release.
+Requires Python 3.11+ and [Docker](https://docs.docker.com/get-docker/) for `check`, `run`, `test`, and `gtk build --mode container` (assumed installed, never installed by `gtk`). Default `gtk build` (`--mode host`) does not need Docker. Installing the package adds the `gtk` command and a compatible `pip` release.
 
 ```bash
 pip install aws-glue-toolkit
@@ -68,7 +68,7 @@ Each job is a directory containing `pyproject.toml`. Unknown keys are ignored. T
 
 ### Pip configuration
 
-For container pip (`check`, default `build`, and dep install on `run` / `test`), `gtk` snapshots the host’s effective [pip configuration](https://pip.pypa.io/en/stable/topics/configuration/) (files + `PIP_*`, env wins) into a temporary `pip.conf`, mounts it, and sets `PIP_CONFIG_FILE`. Host-local keys (`cache-dir`, `cert`, `target`, and similar) are omitted. With `gtk build --mode fast`, host pip config applies directly.
+For container pip (`check`, `build --mode container`, and dep install on `run` / `test`), `gtk` snapshots the host’s effective [pip configuration](https://pip.pypa.io/en/stable/topics/configuration/) (files + `PIP_*`, env wins) into a temporary `pip.conf`, mounts it, and sets `PIP_CONFIG_FILE`. Host-local keys (`cache-dir`, `cert`, `target`, and similar) are omitted. With `gtk build` (default `--mode host`), host pip config applies directly.
 
 ```bash
 # ~/.config/pip/pip.conf  or:
@@ -78,12 +78,12 @@ gtk check .
 
 ## Commands
 
-`[JOB-DIR]` is the job directory path, passed as a positional argument or with `--job-dir [JOB-DIR]` (default: `.`). Except for `gtk build --mode fast`, Docker must be available; the Glue image is pulled on first use. `gtk` never installs Docker.
+`[JOB-DIR]` is the job directory path, passed as a positional argument or with `--job-dir [JOB-DIR]` (default: `.`). Docker must be available for `check`, `run`, `test`, and `gtk build --mode container` (Glue image pulled on first use). Default `gtk build` (`--mode host`) does not need Docker. `gtk` never installs Docker.
 
 | Command | Usage |
 | --- | --- |
 | check | `gtk check [JOB-DIR]` |
-| build | `gtk build [JOB-DIR] [--mode fast]` |
+| build | `gtk build [JOB-DIR] [--mode host\|container]` |
 | run | `gtk run [JOB-DIR] [args...]` |
 | test | `gtk test [JOB-DIR] [pytest args...]` |
 
@@ -97,8 +97,8 @@ Resolves `project.dependencies` in the Glue image for `glue_version` against bun
 
 Writes a dependencies zip (host: `.py` under `source`) and a gluewheels zip.
 
-- **Default:** `pip wheel` in the Glue image (`linux/amd64`).
-- **`--mode fast`:** host packaging (no Docker). Path/VCS via `pip wheel --no-deps`; other packages via `pip download --platform --only-binary=:all:`, or sdist→wheel on the host when no compatible wheel exists. Wheels must be `any` or the Glue `pip_platform` (use default Docker build for compiled packages). VCS needs network and `git` on the host.
+- **`--mode host` (default):** host packaging (no Docker). Path/VCS via `pip wheel --no-deps`; other packages via `pip download --platform --only-binary=:all:`, or sdist→wheel on the host when no compatible wheel exists. Wheels must be `any` or the Glue `pip_platform` (use `--mode container` for compiled packages that need a worker-arch build). VCS needs network and `git` on the host.
+- **`--mode container`:** `pip wheel` in the Glue image (`linux/amd64`). On ARM hosts this needs QEMU (or similar) unless you use `--mode host` for portable wheels.
 
 Path deps must be installable packages (`pyproject.toml` or `setup.py`); loose job modules belong under `source`. Both zips are always written; gluewheels omits packages already pinned on the image at the same version.
 
@@ -113,7 +113,7 @@ Path deps must be installable packages (`pyproject.toml` or `setup.py`); loose j
 | --- | --- | --- |
 | PyPI | `pydantic==2.13.4` | Version pins or ranges |
 | Path (in job) | `my-lib @ file:./libs/my-lib` | Built into a wheel at build time |
-| Path (monorepo) | `shared @ file:../packages/shared` | Default: mounted into the container; fast: host path |
+| Path (monorepo) | `shared @ file:../packages/shared` | Container mode: mounted into the image; host mode: host path |
 | Git (HTTPS) | `tool @ git+https://github.com/org/tool.git@v1` | Needs network + `git` |
 
 Editable installs (`-e`) are rejected.

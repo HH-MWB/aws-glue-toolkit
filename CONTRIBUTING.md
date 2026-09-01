@@ -68,10 +68,6 @@ docs: clarify GlueVersion in docstrings
 - Ensure pre-commit passes before requesting review.
 - Use a Conventional Commit-style PR title when possible.
 
-## Testing
-
-There is no unit test suite in this repository yet. CI runs lint and type checks only (see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)). When validating changes manually, use Docker to run `gtk check`, `gtk build`, `gtk run`, or `gtk test` against a sample Glue job directory.
-
 ## Code of conduct
 
 Participants are expected to follow our [Code of Conduct](CODE_OF_CONDUCT.md).

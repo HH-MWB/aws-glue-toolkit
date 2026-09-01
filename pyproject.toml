@@ -1,26 +1,35 @@
+[build-system]
+requires = ["uv_build>=0.11,<0.12"]
+build-backend = "uv_build"
+
 [project]
 name = "aws-glue-toolkit"
-version = "0.2.0"
+version = "0.3.0"
 description = "A streamlined CLI utility designed to simplify the AWS Glue development lifecycle."
 readme = "README.md"
-authors = [{ name = "HH-MWB", email = "h.hong@mail.com" }]
-license = "MIT"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "HH-MWB", email = "h.hong@mail.com" }]
 keywords = [
     "aws",
-    "glue",
-    "etl",
-    "spark",
     "cli",
     "docker",
+    "etl",
+    "glue",
+    "spark",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
+    "Environment :: Console",
     "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Build Tools",
 ]
 dependencies = [
     "cyclopts>=4,<5",
@@ -42,10 +51,6 @@ gtk = "aws_glue_toolkit.cli:app"
 dev = [
     "pre-commit",
 ]
-
-[build-system]
-requires = ["uv_build>=0.11,<0.12"]
-build-backend = "uv_build"
 
 [tool.mypy]
 python_version = "3.11"
@@ -82,15 +87,16 @@ enable_error_code = [
 init_forbid_extra = true
 init_typed = true
 
-[tool.pylint.format]
-max-line-length = 79
-
 [tool.pylint.design]
 exclude-too-few-public-methods = ["pydantic.*"]
 max-statements = 10
 
+[tool.pylint.format]
+max-line-length = 79
+
 [tool.ruff]
 line-length = 79
+target-version = "py311"
 fix = true
 force-exclude = true
 
@@ -101,8 +107,8 @@ ignore = [
     "D213", # Incompatible with D212 (multi-line-summary-first-line)
 ]
 
-[tool.ruff.lint.pylint]
-max-statements = 10
-
 [tool.ruff.lint.mccabe]
 max-complexity = 5
+
+[tool.ruff.lint.pylint]
+max-statements = 10

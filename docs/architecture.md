@@ -12,7 +12,7 @@ Domain facts, rules, and transforms. No CLI, Docker subprocesses, or terminal I/
 | `paths.py` | Container mount constants; host→container path mapping |
 | `runtime.py` | Bundled Glue version JSON → `GlueRuntimeMetadata` |
 | `job.py` | `pyproject.toml` validation → `GlueJobProject` |
-| `dependencies.py` | PEP 508 prep; pip dry-run resolve, `pip wheel`, image-pin filtering; staged install for run/test; `PipRunner` injection |
+| `dependencies.py` | PEP 508 prep; pip dry-run, `pip wheel` / `pip download`, image-pin filtering; staged install for run/test; `PipRunner` injection |
 | `artifacts.py` | Zip layout for `.dependencies.zip` and gluewheels tree staging |
 
 Core modules must not import `docker`, `cli`, or `app`. Allowed sibling
@@ -24,9 +24,9 @@ Process boundaries and use-case orchestration:
 
 | Role | Module | Responsibility |
 | --- | --- | --- |
-| **Infra** | `docker.py` | `docker run` argv builders, `run_job`, `run_tests`, `run_pip_in_container`, `pip_runner`; host pip config snapshot → mounted `pip.conf` |
+| **Infra** | `docker.py` | `docker run` argv builders, `run_job`, `run_tests`, `run_pip_in_container`, `pip_runner`, `host_pip_runner`; host pip config snapshot → mounted `pip.conf` |
 | **Infra** | `run_wrapper.py` | `spark-submit` entry for `gtk run`; clean container exit after the job |
-| **Application** | `app.py` | `check`, `build`, `run`, `test`; wires `dependencies` to Docker |
+| **Application** | `app.py` | `check`, `build`, `run`, `test`; wires `dependencies` to host or container pip runners |
 | **Presentation** | `cli.py` | `gtk` entry point, `GtkCommandError`, exit codes, Rich panels |
 
 `app` raises domain exceptions (`PipError`, `DockerError`, `ValueError`,
@@ -84,8 +84,9 @@ flowchart TB
 2. `app.build` → `dependencies.prepare_requirements`
 3. `artifacts.stage_gluewheels_zip` → `dependencies.bundle_wheels` → `artifacts.write_gluewheels_tree` → zip
 
-`bundle_wheels` runs `pip wheel` in Docker, then deletes wheels whose
-`name==version` matches bundled Glue image pins.
+Default ``--mode host``: host `file:` paths, `host_pip_runner`; recipe is path/VCS `pip wheel --no-deps` → resolve pins → per pin `pip download --only-binary` or sdist→wheel → portable assert; same pin omit.
+
+``--mode container``: `pip wheel` in Docker via `pip_runner`; omit Glue image pins.
 
 ### `gtk run` / `gtk test`
 
@@ -100,7 +101,7 @@ finishes.
 
 ## Git and VCS dependencies
 
-Git direct URLs are passed through to pip inside the Glue image. See
+Git direct URLs are passed through to pip. See
 [README.md](../README.md#dependency-forms) for supported forms and limits.
 
 ## Adding code

@@ -4,6 +4,7 @@ Commands:
 
 - ``check`` — resolve dependencies in the official AWS Glue local Docker image
 - ``build`` — write ``.gluewheels.zip`` and ``.dependencies.zip`` artifacts
+  (default ``--mode host``; ``--mode container`` uses the Glue image)
 - ``run`` — execute the job in the official AWS Glue local Docker image
 - ``test`` — run pytest in the official AWS Glue local Docker image
 
@@ -21,6 +22,7 @@ Example::
 
     gtk check ./my-glue-job
     gtk build ./my-glue-job
+    gtk build ./my-glue-job --mode container
     gtk run ./my-glue-job
     gtk test ./my-glue-job
 
@@ -36,6 +38,7 @@ from tomllib import TOMLDecodeError
 from typing import (
     TYPE_CHECKING,
     Annotated,
+    Literal,
     TypeAlias,
     TypeVar,
     Unpack,
@@ -319,29 +322,50 @@ def check(job: GlueJobProject) -> Panel:
     )
 
 
-@gtk_command
-def build(job: GlueJobProject) -> Panel:
+@app.command
+def build(
+    job_dir: DirectoryPath = Path(),
+    mode: Annotated[
+        Literal["host", "container"],
+        Parameter(
+            name="--mode",
+            help=(
+                "Where to package wheels: host pip (default) or Glue "
+                "container (worker-arch; needs Docker)."
+            ),
+        ),
+    ] = "host",
+) -> Panel | int:
     """Build gluewheels and dependencies zips under the job directory.
 
     Writes ``{name}-{version}.dependencies.zip`` and
-    ``{name}-{version}.gluewheels.zip``. Bundles wheels from PyPI, ``file:``
-    path, and git/VCS dependencies inside the official AWS Glue local Docker
-    image. Omits packages already pinned on the Glue image.
+    ``{name}-{version}.gluewheels.zip``. Default ``--mode host``: host
+    ``pip wheel --no-deps`` for path/VCS; ``pip download --platform`` or
+    sdist→wheel for other packages (portable tags only). ``--mode
+    container``: ``pip wheel`` in the Glue image (worker-arch). Omits Glue
+    image pins.
 
     """
     try:
-        project_dir = _handle_dependency_errors(lambda: build_job(job))
-    except (OSError, PipError) as err:
-        raise GtkCommandError(
-            GtkExitCode.SOFTWARE,
-            "Build failed",
-            str(err),
-        ) from None
-    return Panel(
-        f"Wrote zip files to {project_dir}.",
-        title="[bold green]Build complete[/]",
-        border_style="green",
-    )
+        job = _load_job_project(job_dir)
+        try:
+            project_dir = _handle_dependency_errors(
+                lambda: build_job(job, mode=mode),
+            )
+        except (OSError, PipError) as err:
+            raise GtkCommandError(
+                GtkExitCode.SOFTWARE,
+                "Build failed",
+                str(err),
+            ) from None
+        return Panel(
+            f"Wrote zip files to {project_dir}.",
+            title="[bold green]Build complete[/]",
+            border_style="green",
+        )
+    except GtkCommandError as err:
+        _print_command_error(err)
+        return int(err.exit_code)
 
 
 @gtk_command

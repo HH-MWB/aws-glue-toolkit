@@ -1,5 +1,8 @@
 """Run Glue jobs, tests, and pip in the official AWS Glue local Docker image.
 
+Also exposes :func:`host_pip_runner` for host-side pip (``gtk build
+--mode host``).
+
 Pure builders produce ``docker run``, ``spark-submit``, ``pytest``, and pip
 argv lists; :func:`run_container` and :func:`run_container_capture` are the
 subprocess shells. :func:`run_job` mounts
@@ -10,7 +13,7 @@ Public API: :func:`build_run_argv`, :func:`build_spark_submit_argv`,
 :func:`build_pytest_argv`, :func:`build_pip_argv`, :func:`run_container`,
 :func:`run_container_capture`, :func:`run_pip_in_container`,
 :func:`run_job`, :func:`run_tests`, :func:`pip_runner`,
-:exc:`DockerError`.
+:func:`host_pip_runner`, :exc:`DockerError`.
 
 Container mount paths live in :mod:`aws_glue_toolkit.paths`. Host pip
 config is snapshotted to :data:`~aws_glue_toolkit.paths.PIP_CONFIG_MOUNT`
@@ -39,6 +42,7 @@ from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
 
 from aws_glue_toolkit.dependencies import (
+    PipError,
     PipRunner,
     pip_error_from_returncode,
     pip_install_target_args,
@@ -63,6 +67,7 @@ __all__ = [
     "build_pytest_argv",
     "build_run_argv",
     "build_spark_submit_argv",
+    "host_pip_runner",
     "pip_runner",
     "run_container",
     "run_container_capture",
@@ -432,7 +437,7 @@ def run_pip_in_container(
 
 
 def pip_runner(job: GlueJobProject) -> PipRunner:
-    """Return a :class:`~aws_glue_toolkit.dependencies.PipRunner`."""
+    """Return a Docker :class:`~aws_glue_toolkit.dependencies.PipRunner`."""
 
     def execute_pip(
         args: Sequence[str],
@@ -446,6 +451,39 @@ def pip_runner(job: GlueJobProject) -> PipRunner:
         )
 
         # Translate non-zero pip exit codes to PipError.
+        if result.returncode != 0:
+            raise pip_error_from_returncode(
+                result.returncode,
+                stdout=result.stdout,
+                stderr=result.stderr,
+            )
+
+    return execute_pip
+
+
+def host_pip_runner() -> PipRunner:
+    """Return a host :class:`~aws_glue_toolkit.dependencies.PipRunner`.
+
+    Runs ``python -m pip`` with the current interpreter. Volume mounts are
+    ignored; host paths in ``args`` are used as-is.
+    """
+
+    def execute_pip(
+        args: Sequence[str],
+        volume_mounts: Sequence[tuple[Path, str]],
+    ) -> None:
+        del volume_mounts  # Host paths in args; mounts are Docker-only.
+        try:
+            result = run(  # noqa: S603
+                [executable, "-m", "pip", *args],
+                check=False,
+                capture_output=True,
+                text=True,
+                shell=False,
+            )  # nosec B603
+        except OSError as exc:
+            raise PipError(str(exc)) from exc
+
         if result.returncode != 0:
             raise pip_error_from_returncode(
                 result.returncode,

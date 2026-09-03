@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "aws-glue-toolkit"
-version = "0.3.0"
+version = "0.4.0"
 description = "A streamlined CLI utility designed to simplify the AWS Glue development lifecycle."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -103,6 +103,7 @@ force-exclude = true
 [tool.ruff.lint]
 select = ["ALL"]
 ignore = [
+    "CPY001",  # No per-file copyright headers in this project
     "D203", # Incompatible with D211 (no-blank-line-before-class)
     "D213", # Incompatible with D212 (multi-line-summary-first-line)
 ]

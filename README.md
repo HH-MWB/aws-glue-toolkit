@@ -58,11 +58,12 @@ Each job is a directory containing `pyproject.toml`. Unknown keys are ignored. T
 | --- | --- | --- | --- |
 | `project.name` | yes | — | Job name; used in artifact file names |
 | `project.version` | no | `0.0.0` | Job version; used in artifact file names |
-| `project.dependencies` | no | `[]` | Direct dependencies as PEP 508 strings (PyPI, `file:` path, or git/VCS) |
+| `project.dependencies` | no | `[]` | Direct dependencies as PEP 508 strings (PyPI, git/VCS, or `file:`). Prefer relative `file:` under `tool.aws-glue-toolkit.dependencies` so other tools ignore them |
 | `tool.aws-glue-toolkit.glue_version` | yes | — | Glue release; bundled pins for `5.0` and `5.1` |
 | `tool.aws-glue-toolkit.source` | yes | — | Source directory, relative to the job root |
 | `tool.aws-glue-toolkit.script` | yes | — | Entry script, relative to `source` |
 | `tool.aws-glue-toolkit.tests` | no | `tests` | Test directory, relative to the job root |
+| `tool.aws-glue-toolkit.dependencies` | no | `[]` | Extra PEP 508 strings merged after `project.dependencies`; recommended for relative `file:` paths |
 
 ### Pip configuration
 
@@ -85,11 +86,11 @@ gtk check .
 | run | `gtk run [JOB-DIR] [args...]` |
 | test | `gtk test [JOB-DIR] [pytest args...]` |
 
-For `run` / `test`: job dir mounted at `/home/hadoop/workspace`; non-empty `project.dependencies` install into an ephemeral `PYTHONPATH` target (Glue pins as constraints); stdio pass through; exit code is the container command’s (or pip’s if install fails). Same dependency forms as `check` / `build`.
+For `run` / `test`: job dir mounted at `/home/hadoop/workspace`; non-empty job dependencies install into an ephemeral `PYTHONPATH` target (Glue pins as constraints); stdio pass through; exit code is the container command’s (or pip’s if install fails). Same dependency forms as `check` / `build`.
 
 ### check
 
-Resolves `project.dependencies` in the Glue image for `glue_version` against bundled pins. Does not write files.
+Resolves job dependencies (`project.dependencies` then `tool.aws-glue-toolkit.dependencies`) in the Glue image for `glue_version` against bundled pins. Does not write files.
 
 ### build
 
@@ -115,6 +116,26 @@ Path deps must be installable packages (`pyproject.toml` or `setup.py`); loose j
 | Git (HTTPS) | `tool @ git+https://github.com/org/tool.git@v1` | Needs network + `git` |
 
 Editable installs (`-e`) are rejected.
+
+Relative `file:` paths are not a portable PEP 508 form for other tools. Prefer them under `[tool.aws-glue-toolkit].dependencies` (merged after `[project].dependencies`):
+
+```toml
+[project]
+name = "my-glue-job"
+version = "0.1.0"
+dependencies = ["pandas>=2"]
+
+[tool.aws-glue-toolkit]
+glue_version = "5.1"
+source = "src"
+script = "__main__.py"
+dependencies = [
+  "my-lib @ file:./libs/my-lib",
+  "shared @ file:../packages/shared",
+]
+```
+
+You may still list relative `file:` specs under `[project].dependencies`; `gtk` accepts either location.
 
 ### run
 

@@ -11,7 +11,7 @@ Domain facts, rules, and transforms. No CLI, Docker subprocesses, or terminal I/
 | --- | --- |
 | `paths.py` | Container mount constants; host→container path mapping |
 | `runtime.py` | Bundled Glue version JSON → `GlueRuntimeMetadata` |
-| `job.py` | `pyproject.toml` validation → `GlueJobProject` |
+| `job.py` | `pyproject.toml` validation → `GlueJobProject` (merges `project.dependencies` then `tool.aws-glue-toolkit.dependencies`) |
 | `dependencies.py` | PEP 508 prep; pip dry-run, `pip wheel` / `pip download`, image-pin filtering; staged install for run/test; `PipRunner` injection |
 | `artifacts.py` | Zip layout for `.dependencies.zip` and gluewheels tree staging |
 

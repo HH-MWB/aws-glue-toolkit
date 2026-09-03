@@ -304,7 +304,8 @@ def check(job: GlueJobProject) -> Panel:
 
     Resolves job dependencies inside the official AWS Glue local Docker
     image against bundled Glue runtime pins. Supports PyPI, ``file:`` path,
-    and git/VCS direct references in ``project.dependencies``.
+    and git/VCS direct references from ``project.dependencies`` and
+    ``tool.aws-glue-toolkit.dependencies`` (merged in that order).
 
     """
     try:
@@ -372,8 +373,8 @@ def build(
 def run(job: GlueJobProject, *job_args: str) -> int:
     """Run the job in the official AWS Glue local Docker image.
 
-    Installs ``project.dependencies`` into the ephemeral container when
-    present. Passes ``--JOB_NAME`` from ``project.name`` unless overridden.
+    Installs job dependencies into the ephemeral container when present.
+    Passes ``--JOB_NAME`` from ``project.name`` unless overridden.
     Forwards additional tokens after ``job_dir`` to the job for
     ``getResolvedOptions``. Returns when the job finishes; container stdout
     and stderr pass through unchanged.
@@ -393,8 +394,8 @@ def run(job: GlueJobProject, *job_args: str) -> int:
 def test(job: GlueJobProject, *pytest_args: str) -> int:
     """Run pytest in the official AWS Glue local Docker image.
 
-    Installs ``project.dependencies`` into the ephemeral container when
-    present. Uses ``tool.aws-glue-toolkit.tests`` and sets ``PYTHONPATH`` to
+    Installs job dependencies into the ephemeral container when present.
+    Uses ``tool.aws-glue-toolkit.tests`` and sets ``PYTHONPATH`` to
     ``source``. Forwards additional tokens after ``job_dir`` to ``pytest``.
     Container stdout and stderr pass through unchanged.
 

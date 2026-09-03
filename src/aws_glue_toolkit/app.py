@@ -1,14 +1,16 @@
 """Application orchestration for ``gtk`` check, build, run, and test.
 
 Wires :mod:`aws_glue_toolkit.dependencies` to
-:mod:`aws_glue_toolkit.docker` (host pip for ``build --mode host``,
-container pip for ``build --mode container``, ``check``, ``run``, and
+:mod:`aws_glue_toolkit.docker` (host pip for ``build|check --mode host``,
+container pip for ``build|check --mode container``, ``run``, and
 ``test``). No Rich panels, Cyclopts, or exit codes — callers
 in :mod:`aws_glue_toolkit.cli` map exceptions to user-facing output.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Literal
 
 from aws_glue_toolkit.artifacts import (
@@ -30,8 +32,6 @@ from aws_glue_toolkit.docker import (
 )
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from aws_glue_toolkit.job import GlueJobProject
 
 __all__ = [
@@ -42,23 +42,56 @@ __all__ = [
 ]
 
 
-def check(job: GlueJobProject) -> None:
-    """Verify job dependencies resolve against Glue runtime pins.
+def _bundle_wheels_for_mode(
+    job: GlueJobProject,
+    dest: Path,
+    *,
+    mode: Literal["host", "container"],
+) -> dict[str, str]:
+    """Prepare deps and run :func:`bundle_wheels` for ``mode``."""
+    host = mode == "host"
+    return bundle_wheels(
+        prepared=prepare_requirements(
+            job.dependencies,
+            job.project_dir,
+            for_container=not host,
+        ),
+        runtime=job.runtime,
+        dest=dest,
+        runner=host_pip_runner() if host else pip_runner(job),
+        cross_platform=host,
+    )
+
+
+def check(
+    job: GlueJobProject,
+    *,
+    mode: Literal["host", "container"],
+) -> None:
+    """Verify job dependencies against Glue runtime pins.
 
     Args:
         job: Resolved job config from
             :func:`~aws_glue_toolkit.job.load_pyproject`.
+        mode: ``"host"`` — same gluewheels recipe as ``build --mode host``
+            (temp dir, discarded); ``"container"`` — dry-run in the Glue
+            image.
 
     Raises:
-        PipError: Requirements are unsatisfiable.
+        PipError: Unsatisfiable requirements or non-portable host wheels.
         RequirementPreparationError: A dependency spec could not be prepared.
+        DockerError: Docker unavailable when ``mode`` is ``"container"``.
 
     """
-    resolve_packages(
-        prepared=prepare_requirements(job.dependencies, job.project_dir),
-        runtime=job.runtime,
-        runner=pip_runner(job),
-    )
+    if mode == "container":
+        resolve_packages(
+            prepared=prepare_requirements(job.dependencies, job.project_dir),
+            runtime=job.runtime,
+            runner=pip_runner(job),
+        )
+        return
+    with TemporaryDirectory() as tmp:
+        _bundle_wheels_for_mode(job, Path(tmp), mode="host")
 
 
 def build(
@@ -90,22 +123,11 @@ def build(
         job.project_dir / job.dependencies_zip_filename,
     )
 
-    host = mode == "host"
     # Gluewheels zip via host pip (--mode host) or Docker (--mode container).
     with stage_gluewheels_zip(
         job.project_dir / job.gluewheels_zip_filename,
     ) as wheels_dir:
-        packages = bundle_wheels(
-            prepared=prepare_requirements(
-                job.dependencies,
-                job.project_dir,
-                for_container=not host,
-            ),
-            runtime=job.runtime,
-            dest=wheels_dir,
-            runner=host_pip_runner() if host else pip_runner(job),
-            cross_platform=host,
-        )
+        packages = _bundle_wheels_for_mode(job, wheels_dir, mode=mode)
         write_gluewheels_tree(wheels_dir, packages)
     return job.project_dir
 

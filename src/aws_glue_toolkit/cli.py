@@ -2,25 +2,17 @@
 
 Commands:
 
-- ``check`` — resolve dependencies in the official AWS Glue local Docker image
-- ``build`` — write ``.gluewheels.zip`` and ``.dependencies.zip`` artifacts
-  (default ``--mode host``; ``--mode container`` uses the Glue image)
-- ``run`` — execute the job in the official AWS Glue local Docker image
-- ``test`` — run pytest in the official AWS Glue local Docker image
+- ``check`` / ``build`` — ``--mode host`` (default) or ``container``
+- ``run`` / ``test`` — official AWS Glue local Docker image
 
-Job commands are registered with :func:`gtk_command`. That decorator loads
-the job via :func:`_load_job_project`, passes the resulting
-:class:`~aws_glue_toolkit.job.GlueJobProject` to the command,
-and on failure prints a Rich panel from :exc:`GtkCommandError` on
-:attr:`~cyclopts.App.error_console` and returns a :class:`GtkExitCode`
-(BSD ``sysexits.h``, 64-78). On success, commands return a Rich panel
-that Cyclopts prints and exits ``0``. Unhandled exceptions propagate
-with exit code ``1``. Pyproject load failures and command domain failures
-raise :exc:`GtkCommandError` locally.
+``run`` / ``test`` use :func:`gtk_command` (loads the job, maps
+:exc:`GtkCommandError` to Rich panels / :class:`GtkExitCode`).
+``check`` / ``build`` use ``@app.command`` so they can take ``--mode``.
 
 Example::
 
     gtk check ./my-glue-job
+    gtk check ./my-glue-job --mode container
     gtk build ./my-glue-job
     gtk build ./my-glue-job --mode container
     gtk run ./my-glue-job
@@ -298,29 +290,45 @@ def gtk_command(
 # --- Commands ---
 
 
-@gtk_command
-def check(job: GlueJobProject) -> Panel:
-    """Verify dependencies resolve for the job's Glue runtime.
+@app.command
+def check(
+    job_dir: DirectoryPath = Path(),
+    mode: Annotated[
+        Literal["host", "container"],
+        Parameter(
+            name="--mode",
+            help=(
+                "host (default; no Docker) or container dry-run "
+                "(worker-arch; needs Docker)."
+            ),
+        ),
+    ] = "host",
+) -> Panel | int:
+    """Verify dependencies against Glue runtime pins.
 
-    Resolves job dependencies inside the official AWS Glue local Docker
-    image against bundled Glue runtime pins. Supports PyPI, ``file:`` path,
-    and git/VCS direct references from ``project.dependencies`` and
-    ``tool.aws-glue-toolkit.dependencies`` (merged in that order).
+    ``--mode host`` (default): same gluewheels recipe as ``build --mode
+    host`` (temp dir, discarded). ``--mode container``: dry-run in the Glue
+    image. Does not write zip artifacts.
 
     """
     try:
-        _handle_dependency_errors(lambda: check_job(job))
-    except PipError:
-        raise GtkCommandError(
-            GtkExitCode.DATAERR,
-            "Conflicts detected",
-            "Requirements are unsatisfiable with bundled Glue pins.",
-        ) from None
-    return Panel(
-        "Dependencies resolve against Glue runtime pins.",
-        title="[bold green]No conflicts[/]",
-        border_style="green",
-    )
+        job = _load_job_project(job_dir)
+        try:
+            _handle_dependency_errors(lambda: check_job(job, mode=mode))
+        except PipError:
+            raise GtkCommandError(
+                GtkExitCode.DATAERR,
+                "Conflicts detected",
+                "Requirements are unsatisfiable with bundled Glue pins.",
+            ) from None
+        return Panel(
+            "Dependencies resolve against Glue runtime pins.",
+            title="[bold green]No conflicts[/]",
+            border_style="green",
+        )
+    except GtkCommandError as err:
+        _print_command_error(err)
+        return int(err.exit_code)
 
 
 @app.command
@@ -331,8 +339,8 @@ def build(
         Parameter(
             name="--mode",
             help=(
-                "Where to package wheels: host pip (default) or Glue "
-                "container (worker-arch; needs Docker)."
+                "host pip (default) or Glue container "
+                "(worker-arch; needs Docker)."
             ),
         ),
     ] = "host",

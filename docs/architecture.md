@@ -76,17 +76,16 @@ flowchart TB
 
 ### `gtk check`
 
-`cli` → `app.check` → `dependencies.prepare_requirements` → `dependencies.resolve_packages` → `docker.run_pip_in_container`
+- **`--mode host` (default):** `app.check` → `_bundle_wheels_for_mode` / `bundle_wheels` (`cross_platform`, `host_pip_runner`) into a temp dir (discarded; same recipe as host build gluewheels).
+- **`--mode container`:** `app.check` → `resolve_packages` → `pip_runner` / Glue image dry-run.
 
 ### `gtk build`
 
 1. `artifacts.build_dependencies_zip` (host)
-2. `app.build` → `dependencies.prepare_requirements`
-3. `artifacts.stage_gluewheels_zip` → `dependencies.bundle_wheels` → `artifacts.write_gluewheels_tree` → zip
+2. `app.build` → `_bundle_wheels_for_mode` / `bundle_wheels` → `write_gluewheels_tree` → zip
 
-Default ``--mode host``: host `file:` paths, `host_pip_runner`; recipe is path/VCS `pip wheel --no-deps` → resolve pins → per pin `pip download --only-binary` or sdist→wheel → portable assert; same pin omit.
-
-``--mode container``: `pip wheel` in Docker via `pip_runner`; omit Glue image pins.
+Host: path/VCS `pip wheel --no-deps` → resolve → per pin `pip download --only-binary` or sdist→wheel → portable assert; omit image pins.  
+Container: `pip wheel` in Docker; omit image pins.
 
 ### `gtk run` / `gtk test`
 

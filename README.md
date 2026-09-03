@@ -6,7 +6,7 @@ A streamlined CLI utility designed to simplify the AWS Glue development lifecycl
 
 ## Installation
 
-Requires Python 3.11+ and [Docker](https://docs.docker.com/get-docker/) for `check`, `run`, `test`, and `gtk build --mode container` (assumed installed, never installed by `gtk`). Default `gtk build` (`--mode host`) does not need Docker. Installing the package adds the `gtk` command and a compatible `pip` release.
+Requires Python 3.11+ and [Docker](https://docs.docker.com/get-docker/) for `run`, `test`, and `--mode container` on `check`/`build` (never installed by `gtk`). Default `gtk check` / `gtk build` (`--mode host`) need no Docker. Installing the package adds the `gtk` command and a compatible `pip` release.
 
 ```bash
 pip install aws-glue-toolkit
@@ -67,7 +67,7 @@ Each job is a directory containing `pyproject.toml`. Unknown keys are ignored. T
 
 ### Pip configuration
 
-For container pip (`check`, `build --mode container`, and dep install on `run` / `test`), `gtk` snapshots the host’s effective [pip configuration](https://pip.pypa.io/en/stable/topics/configuration/) (files + `PIP_*`, env wins) into a temporary `pip.conf`, mounts it, and sets `PIP_CONFIG_FILE`. Host-local keys (`cache-dir`, `cert`, `target`, and similar) are omitted. With `gtk build` (default `--mode host`), host pip config applies directly.
+For container pip (`check`/`build --mode container`, and dep install on `run`/`test`), `gtk` snapshots the host’s effective [pip configuration](https://pip.pypa.io/en/stable/topics/configuration/) (files + `PIP_*`, env wins) into a temporary `pip.conf`, mounts it, and sets `PIP_CONFIG_FILE`. Host-local keys (`cache-dir`, `cert`, `target`, and similar) are omitted. Default `--mode host` uses host pip config as-is.
 
 ```bash
 # ~/.config/pip/pip.conf  or:
@@ -77,11 +77,11 @@ gtk check .
 
 ## Commands
 
-`[JOB-DIR]` is the job directory path, passed as a positional argument or with `--job-dir [JOB-DIR]` (default: `.`). Docker must be available for `check`, `run`, `test`, and `gtk build --mode container` (Glue image pulled on first use). Default `gtk build` (`--mode host`) does not need Docker. `gtk` never installs Docker.
+`[JOB-DIR]` is the job directory path (positional or `--job-dir`; default `.`). Docker is required for `run`, `test`, and `--mode container` (Glue image pulled on first use). Default `--mode host` does not. `gtk` never installs Docker.
 
 | Command | Usage |
 | --- | --- |
-| check | `gtk check [JOB-DIR]` |
+| check | `gtk check [JOB-DIR] [--mode host\|container]` |
 | build | `gtk build [JOB-DIR] [--mode host\|container]` |
 | run | `gtk run [JOB-DIR] [args...]` |
 | test | `gtk test [JOB-DIR] [pytest args...]` |
@@ -90,7 +90,10 @@ For `run` / `test`: job dir mounted at `/home/hadoop/workspace`; non-empty job d
 
 ### check
 
-Resolves job dependencies (`project.dependencies` then `tool.aws-glue-toolkit.dependencies`) in the Glue image for `glue_version` against bundled pins. Does not write files.
+Verifies job dependencies against Glue runtime pins. Does not write zip artifacts.
+
+- **`--mode host` (default):** same gluewheels recipe as `build --mode host` (temp dir, discarded). No Docker.
+- **`--mode container`:** `pip install --dry-run` in the Glue image (`linux/amd64`; QEMU on ARM).
 
 ### build
 

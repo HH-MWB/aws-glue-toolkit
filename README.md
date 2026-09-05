@@ -79,12 +79,15 @@ gtk check .
 
 `[JOB-DIR]` is the job directory path (positional or `--job-dir`; default `.`). Docker is required for `run`, `test`, and `--mode container` (Glue image pulled on first use). Default `--mode host` does not. `gtk` never installs Docker.
 
+**`build|check --mode`** chooses *where pip runs*: **`host`** (default) local pip for worker-oriented resolve/packaging (no Docker); **`container`** worker-arch Glue/build container (may need QEMU on ARM).  
+**`run|test --platform`** chooses *which Glue image arch to run*: **`native`** (default) matches your machine; **`worker`** matches Glue job workers (may need QEMU on ARM).
+
 | Command | Usage |
 | --- | --- |
 | check | `gtk check [JOB-DIR] [--mode host\|container]` |
 | build | `gtk build [JOB-DIR] [--mode host\|container]` |
-| run | `gtk run [JOB-DIR] [args...]` |
-| test | `gtk test [JOB-DIR] [pytest args...]` |
+| run | `gtk run [JOB-DIR] [--platform native\|worker] [args...]` |
+| test | `gtk test [JOB-DIR] [--platform native\|worker] [pytest args...]` |
 
 For `run` / `test`: job dir mounted at `/home/hadoop/workspace`; non-empty job dependencies install into an ephemeral `PYTHONPATH` target (Glue pins as constraints); stdio pass through; exit code is the container command’s (or pip’s if install fails). Same dependency forms as `check` / `build`.
 
@@ -93,14 +96,14 @@ For `run` / `test`: job dir mounted at `/home/hadoop/workspace`; non-empty job d
 Verifies job dependencies against Glue runtime pins. Does not write zip artifacts.
 
 - **`--mode host` (default):** same gluewheels recipe as `build --mode host` (temp dir, discarded). No Docker.
-- **`--mode container`:** `pip install --dry-run` in the Glue image (`linux/amd64`; QEMU on ARM).
+- **`--mode container`:** `pip install --dry-run` in the Glue image (worker-arch; QEMU on ARM).
 
 ### build
 
 Writes a dependencies zip (host: `.py` under `source`) and a gluewheels zip.
 
 - **`--mode host` (default):** host packaging (no Docker). Path/VCS via `pip wheel --no-deps`; other packages via `pip download --platform --only-binary=:all:`, or sdist→wheel on the host when no compatible wheel exists. Wheels must be `any` or the Glue `pip_platform` (use `--mode container` for compiled packages that need a worker-arch build). VCS needs network and `git` on the host.
-- **`--mode container`:** `pip wheel` in the Glue image (`linux/amd64`). On ARM hosts this needs QEMU (or similar) unless you use `--mode host` for portable wheels.
+- **`--mode container`:** `pip wheel` in the Glue image (worker-arch). On ARM hosts this needs QEMU (or similar) unless you use `--mode host` for portable wheels.
 
 Path deps must be installable packages (`pyproject.toml` or `setup.py`); loose job modules belong under `source`. Both zips are always written; gluewheels omits packages already pinned on the image at the same version.
 
@@ -144,9 +147,14 @@ You may still list relative `file:` specs under `[project].dependencies`; `gtk` 
 
 `spark-submit` on the entry script. Passes `--JOB_NAME` from `project.name` unless overridden. Extra `--key value` tokens after `[JOB-DIR]` go to `getResolvedOptions` (pass an explicit `[JOB-DIR]` when using `.`). Shuts down the Spark driver so the container returns.
 
+- **`--platform native` (default):** omit Docker `--platform` so the official multi-arch Glue image matches the host (arm64 on Apple Silicon / ARM CI). Local CPU may differ from cloud Glue workers (amd64).
+- **`--platform worker`:** force the Glue worker Docker platform from runtime metadata (today `linux/amd64`). On ARM this needs QEMU (or an amd64 machine); there is no fallback to native.
+
 ### test
 
 `python3 -m pytest`. `PYTHONPATH` includes `source` (and the install target when deps are present). Default target is the configured `tests` dir; if the first forwarded token starts with `-`, that dir is still passed first (`gtk test . -v`); if it is a path, only those tokens go to pytest.
+
+Same `--platform native|worker` as `run`. Prefer `--platform worker` (or amd64 CI / real Glue) when validating native libs or Spark bits that can differ by CPU.
 
 ### Exit codes
 

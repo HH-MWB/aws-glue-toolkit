@@ -12,6 +12,7 @@
     "delta_lake": "3.3.0"
   },
   "pip_platform": "manylinux2014_x86_64",
+  "worker_docker_platform": "linux/amd64",
   "python_packages": {
     "aiobotocore": "2.13.1",
     "aiohappyeyeballs": "2.3.5",

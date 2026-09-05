@@ -132,7 +132,11 @@ def build(
     return job.project_dir
 
 
-def run(job: GlueJobProject, *job_args: str) -> int:
+def run(
+    job: GlueJobProject,
+    *job_args: str,
+    platform: Literal["native", "worker"] = "native",
+) -> int:
     """Run the job in the Glue Docker image, installing deps when needed.
 
     When ``job.dependencies`` is non-empty, stages requirements and runs
@@ -143,6 +147,8 @@ def run(job: GlueJobProject, *job_args: str) -> int:
         job: Resolved job config from
             :func:`~aws_glue_toolkit.job.load_pyproject`.
         *job_args: Tokens forwarded to the job after ``--JOB_NAME``.
+        platform: ``"native"`` omits Docker ``--platform`` (host arch);
+            ``"worker"`` forces ``runtime.worker_docker_platform``.
 
     Returns:
         Container exit code.
@@ -152,20 +158,28 @@ def run(job: GlueJobProject, *job_args: str) -> int:
         DockerError: Docker is unavailable or the container failed to launch.
 
     """
+    docker_platform = (
+        None if platform == "native" else job.runtime.worker_docker_platform
+    )
     if not job.dependencies:
-        return run_job(job, *job_args)
+        return run_job(job, *job_args, platform=docker_platform)
 
     prepared = prepare_requirements(job.dependencies, job.project_dir)
     with staged_requirements(prepared, job.runtime) as (_work, mounts):
         return run_job(
             job,
             *job_args,
+            platform=docker_platform,
             extra_volumes=mounts,
             install_deps=True,
         )
 
 
-def test(job: GlueJobProject, *pytest_args: str) -> int:
+def test(
+    job: GlueJobProject,
+    *pytest_args: str,
+    platform: Literal["native", "worker"] = "native",  # noqa: PT028
+) -> int:
     """Run pytest in the Glue Docker image, installing deps when needed.
 
     When ``job.dependencies`` is non-empty, stages requirements and runs
@@ -175,6 +189,8 @@ def test(job: GlueJobProject, *pytest_args: str) -> int:
         job: Resolved job config from
             :func:`~aws_glue_toolkit.job.load_pyproject`.
         *pytest_args: Tokens forwarded to ``pytest``.
+        platform: ``"native"`` omits Docker ``--platform`` (host arch);
+            ``"worker"`` forces ``runtime.worker_docker_platform``.
 
     Returns:
         Container exit code.
@@ -185,14 +201,18 @@ def test(job: GlueJobProject, *pytest_args: str) -> int:
         DockerError: Docker is unavailable or the container failed to launch.
 
     """
+    docker_platform = (
+        None if platform == "native" else job.runtime.worker_docker_platform
+    )
     if not job.dependencies:
-        return run_tests(job, *pytest_args)
+        return run_tests(job, *pytest_args, platform=docker_platform)
 
     prepared = prepare_requirements(job.dependencies, job.project_dir)
     with staged_requirements(prepared, job.runtime) as (_work, mounts):
         return run_tests(
             job,
             *pytest_args,
+            platform=docker_platform,
             extra_volumes=mounts,
             install_deps=True,
         )

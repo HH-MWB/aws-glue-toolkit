@@ -11,7 +11,7 @@ Domain facts, rules, and transforms. No CLI, Docker subprocesses, or terminal I/
 | --- | --- |
 | `paths.py` | Container mount constants; host→container path mapping |
 | `runtime.py` | Bundled Glue version JSON → `GlueRuntimeMetadata` |
-| `job.py` | `pyproject.toml` validation → `GlueJobProject` |
+| `job.py` | `pyproject.toml` validation → `GlueJobProject` (merges `project.dependencies` then `tool.aws-glue-toolkit.dependencies`) |
 | `dependencies.py` | PEP 508 prep; pip dry-run, `pip wheel` / `pip download`, image-pin filtering; staged install for run/test; `PipRunner` injection |
 | `artifacts.py` | Zip layout for `.dependencies.zip` and gluewheels tree staging |
 
@@ -76,24 +76,32 @@ flowchart TB
 
 ### `gtk check`
 
-`cli` → `app.check` → `dependencies.prepare_requirements` → `dependencies.resolve_packages` → `docker.run_pip_in_container`
+- **`--mode host` (default):** `app.check` → `_bundle_wheels_for_mode` / `bundle_wheels` (`cross_platform`, `host_pip_runner`) into a temp dir (discarded; same recipe as host build gluewheels).
+- **`--mode container`:** `app.check` → `resolve_packages` → `pip_runner` / Glue image dry-run.
 
 ### `gtk build`
 
 1. `artifacts.build_dependencies_zip` (host)
-2. `app.build` → `dependencies.prepare_requirements`
-3. `artifacts.stage_gluewheels_zip` → `dependencies.bundle_wheels` → `artifacts.write_gluewheels_tree` → zip
+2. `app.build` → `_bundle_wheels_for_mode` / `bundle_wheels` → `write_gluewheels_tree` → zip
 
-Default ``--mode host``: host `file:` paths, `host_pip_runner`; recipe is path/VCS `pip wheel --no-deps` → resolve pins → per pin `pip download --only-binary` or sdist→wheel → portable assert; same pin omit.
-
-``--mode container``: `pip wheel` in Docker via `pip_runner`; omit Glue image pins.
+Host: path/VCS `pip wheel --no-deps` → resolve → per pin `pip download --only-binary` or sdist→wheel → portable assert; omit image pins.  
+Container: `pip wheel` in Docker; omit image pins.
 
 ### `gtk run` / `gtk test`
 
-`cli` → `app.run` / `app.test` → `dependencies.prepare_requirements` (when
-deps are present) → `dependencies.staged_requirements` →
-`docker.run_job` / `docker.run_tests` (pip install ``--target`` then
-spark-submit / pytest in one ephemeral container).
+`cli` → `app.run` / `app.test` (`--platform native|worker`) →
+`dependencies.prepare_requirements` (when deps are present) →
+`dependencies.staged_requirements` → `docker.run_job` / `docker.run_tests`
+(pip install ``--target`` then spark-submit / pytest in one ephemeral
+container).
+
+- **`--platform native` (default):** `build_run_argv` omits Docker
+  ``--platform`` (multi-arch image matches the host).
+- **`--platform worker`:** pass
+  ``runtime.worker_docker_platform`` (no fallback to native).
+
+Container ``pip_runner`` (``build|check --mode container``) always uses
+``worker_docker_platform``.
 
 For `gtk run`, `docker.run_job` mounts `run_wrapper.py` as the
 `spark-submit` entry so the container returns after the job script

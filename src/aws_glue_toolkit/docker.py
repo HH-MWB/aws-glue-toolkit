@@ -1,7 +1,7 @@
 """Run Glue jobs, tests, and pip in the official AWS Glue local Docker image.
 
-Also exposes :func:`host_pip_runner` for host-side pip (``gtk build
---mode host``).
+Also exposes :func:`host_pip_runner` for host-side pip (``gtk build`` /
+``gtk check --mode host``).
 
 Pure builders produce ``docker run``, ``spark-submit``, ``pytest``, and pip
 argv lists; :func:`run_container` and :func:`run_container_capture` are the
@@ -76,7 +76,6 @@ __all__ = [
     "run_tests",
 ]
 
-_DOCKER_PLATFORM = "linux/amd64"
 # Host-local / path-bound options omitted from the container pip.conf.
 _PIP_CONFIG_SKIP_KEYS = frozenset(
     {
@@ -216,24 +215,37 @@ def build_pip_argv(pip_args: Sequence[str]) -> list[str]:
     return ["-c", cmd]
 
 
-def build_run_argv(
+def build_run_argv(  # noqa: PLR0913  # pylint: disable=too-many-arguments
     image: str,
     project_dir: Path,
     container_command: Sequence[str],
     *,
+    platform: str | None = None,
     extra_volumes: Sequence[tuple[Path, str]] = (),
     env_forwards: Sequence[str] = (),
 ) -> list[str]:
-    """Build a ``docker run`` argv list for one Glue local container."""
+    """Build a ``docker run`` argv list for one Glue local container.
+
+    Args:
+        image: Glue local Docker image reference.
+        project_dir: Job root directory mounted at
+            :data:`~aws_glue_toolkit.paths.WORKSPACE_MOUNT`.
+        container_command: Tokens after the image name.
+        platform: Docker ``--platform`` value, or ``None`` to omit (native
+            multi-arch selection).
+        extra_volumes: Extra host→container binds.
+        env_forwards: Host env var names to pass through with ``-e``.
+
+    """
     host_dir = project_dir.resolve()
+    platform_flags = ("--platform", platform) if platform is not None else ()
     return [
-        # Base: ephemeral, interactive, linux/amd64 (Glue local images).
+        # Base: ephemeral, interactive Glue local container.
         "docker",
         "run",
         "--rm",
         "-i",
-        "--platform",
-        _DOCKER_PLATFORM,
+        *platform_flags,
         # -e VAR copies from host; -e VAR=value sets an explicit value.
         *[flag for var in env_forwards for flag in ("-e", var)],
         # Job root mounted read-write at the Glue workspace path.
@@ -391,6 +403,7 @@ def run_pip_in_container(
     project_dir: Path,
     pip_args: Sequence[str],
     *,
+    platform: str,
     volume_mounts: Sequence[tuple[Path, str]],
 ) -> CompletedProcess[str]:
     """Run ``python3 -m pip`` inside the Glue container.
@@ -406,6 +419,7 @@ def run_pip_in_container(
         project_dir: Job root directory mounted at
             :data:`~aws_glue_toolkit.paths.WORKSPACE_MOUNT`.
         pip_args: Arguments passed to ``python3 -m pip``.
+        platform: Docker ``--platform`` (worker arch for container pip).
         volume_mounts: Extra ``(host_path, container_mount)`` pairs for
             this run.
 
@@ -430,6 +444,7 @@ def run_pip_in_container(
             image,
             project_dir,
             build_pip_argv(mapped_args),
+            platform=platform,
             extra_volumes=[*resolved_mounts, pip_conf_mount],
             env_forwards=env_forwards,
         )
@@ -437,7 +452,10 @@ def run_pip_in_container(
 
 
 def pip_runner(job: GlueJobProject) -> PipRunner:
-    """Return a Docker :class:`~aws_glue_toolkit.dependencies.PipRunner`."""
+    """Return a Docker :class:`~aws_glue_toolkit.dependencies.PipRunner`.
+
+    Always uses the Glue worker Docker platform from runtime metadata.
+    """
 
     def execute_pip(
         args: Sequence[str],
@@ -447,6 +465,7 @@ def pip_runner(job: GlueJobProject) -> PipRunner:
             job.runtime.docker_image,
             job.project_dir,
             args,
+            platform=job.runtime.worker_docker_platform,
             volume_mounts=volume_mounts,
         )
 
@@ -497,6 +516,7 @@ def host_pip_runner() -> PipRunner:
 def run_job(
     job: GlueJobProject,
     *job_args: str,
+    platform: str | None = None,
     extra_volumes: Sequence[tuple[Path, str]] = (),
     install_deps: bool = False,
 ) -> int:
@@ -509,6 +529,7 @@ def run_job(
         job: Resolved job config from
             :func:`~aws_glue_toolkit.job.load_pyproject`.
         *job_args: Tokens forwarded to ``spark-submit`` after ``--JOB_NAME``.
+        platform: Docker ``--platform``, or ``None`` for native multi-arch.
         extra_volumes: Extra host→container binds (pip work, ``file:`` deps).
         install_deps: When true, pip-install job deps into the ephemeral
             container before ``spark-submit`` and mount host pip config.
@@ -536,6 +557,7 @@ def run_job(
                         job.runtime.docker_image,
                         job.project_dir,
                         container_command,
+                        platform=platform,
                         extra_volumes=[*volumes, pip_conf_mount],
                         env_forwards=env_forwards,
                     ),
@@ -552,6 +574,7 @@ def run_job(
                 job.runtime.docker_image,
                 job.project_dir,
                 container_command,
+                platform=platform,
                 extra_volumes=volumes,
             ),
         )
@@ -560,6 +583,7 @@ def run_job(
 def run_tests(
     job: GlueJobProject,
     *pytest_args: str,
+    platform: str | None = None,
     extra_volumes: Sequence[tuple[Path, str]] = (),
     install_deps: bool = False,
 ) -> int:
@@ -569,6 +593,7 @@ def run_tests(
         job: Resolved job config from
             :func:`~aws_glue_toolkit.job.load_pyproject`.
         *pytest_args: Tokens forwarded to ``pytest``.
+        platform: Docker ``--platform``, or ``None`` for native multi-arch.
         extra_volumes: Extra host→container binds (pip work, ``file:`` deps).
         install_deps: When true, pip-install job deps into the ephemeral
             container before pytest and mount host pip config.
@@ -597,6 +622,7 @@ def run_tests(
                     job.runtime.docker_image,
                     job.project_dir,
                     container_command,
+                    platform=platform,
                     extra_volumes=[*extra_volumes, pip_conf_mount],
                     env_forwards=env_forwards,
                 ),
@@ -613,6 +639,7 @@ def run_tests(
             job.runtime.docker_image,
             job.project_dir,
             container_command,
+            platform=platform,
             extra_volumes=extra_volumes,
         ),
     )

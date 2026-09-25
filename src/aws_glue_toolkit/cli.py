@@ -2,49 +2,35 @@
 
 Commands:
 
-- ``check`` — resolve dependencies in the official AWS Glue local Docker image
-- ``build`` — write ``.gluewheels.zip`` and ``.dependencies.zip`` artifacts
-  (default ``--mode host``; ``--mode container`` uses the Glue image)
-- ``run`` — execute the job in the official AWS Glue local Docker image
-- ``test`` — run pytest in the official AWS Glue local Docker image
+- ``check`` / ``build`` — ``--mode host`` (default) or ``container``
+- ``run`` / ``test`` — ``--platform native`` (default) or ``worker``
 
-Job commands are registered with :func:`gtk_command`. That decorator loads
-the job via :func:`_load_job_project`, passes the resulting
-:class:`~aws_glue_toolkit.job.GlueJobProject` to the command,
-and on failure prints a Rich panel from :exc:`GtkCommandError` on
-:attr:`~cyclopts.App.error_console` and returns a :class:`GtkExitCode`
-(BSD ``sysexits.h``, 64-78). On success, commands return a Rich panel
-that Cyclopts prints and exits ``0``. Unhandled exceptions propagate
-with exit code ``1``. Pyproject load failures and command domain failures
-raise :exc:`GtkCommandError` locally.
+``build|check --mode`` chooses where pip runs: ``host`` (default) local
+pip for worker-oriented resolve/packaging (no Docker); ``container``
+worker-arch Glue/build container (may need QEMU on ARM).
+``run|test --platform`` chooses which Glue image arch to run: ``native``
+(default) matches your machine; ``worker`` matches Glue job workers
+(may need QEMU on ARM).
 
 Example::
 
     gtk check ./my-glue-job
+    gtk check ./my-glue-job --mode container
     gtk build ./my-glue-job
     gtk build ./my-glue-job --mode container
     gtk run ./my-glue-job
+    gtk run ./my-glue-job --platform worker
     gtk test ./my-glue-job
+    gtk test ./my-glue-job --platform worker
 
 """
 
 from __future__ import annotations
 
 from enum import IntEnum
-from inspect import Parameter as InspectParameter
-from inspect import signature
 from pathlib import Path
 from tomllib import TOMLDecodeError
-from typing import (
-    TYPE_CHECKING,
-    Annotated,
-    Literal,
-    TypeAlias,
-    TypeVar,
-    Unpack,
-    cast,
-    overload,
-)
+from typing import TYPE_CHECKING, Annotated, Literal, TypeVar
 
 from cyclopts import App, Parameter
 from pydantic import ValidationError
@@ -59,25 +45,13 @@ from aws_glue_toolkit.app import run as run_job
 from aws_glue_toolkit.app import test as test_job
 from aws_glue_toolkit.dependencies import PipError, RequirementPreparationError
 from aws_glue_toolkit.docker import DockerError
-from aws_glue_toolkit.job import GlueJobProject, load_pyproject
+from aws_glue_toolkit.job import load_pyproject
 from aws_glue_toolkit.runtime import UnsupportedGlueVersionError
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    ForwardedArg: TypeAlias = Annotated[
-        str,
-        Parameter(allow_leading_hyphen=True),
-    ]
-    GtkPanelCommand: TypeAlias = Callable[[GlueJobProject], Panel]
-    GtkVarargsCommand: TypeAlias = Callable[
-        [GlueJobProject, Unpack[tuple[str, ...]]],
-        int,
-    ]
-    GtkForwardingWrapper: TypeAlias = Callable[
-        [DirectoryPath, Unpack[tuple[ForwardedArg, ...]]],
-        Panel | int,
-    ]
+    from aws_glue_toolkit.job import GlueJobProject
 
 __all__ = ["app"]
 
@@ -86,7 +60,11 @@ T = TypeVar("T")
 # --- App ---
 
 app = App(
-    help="AWS Glue development lifecycle toolkit.",
+    help=(
+        "AWS Glue development lifecycle toolkit. "
+        "build|check --mode chooses where pip runs (host|container); "
+        "run|test --platform chooses Glue image arch (native|worker)."
+    ),
     result_action="print_non_int_sys_exit",
 )
 
@@ -116,7 +94,7 @@ class GtkCommandError(Exception):
 
     Attributes:
         exit_code: :class:`GtkExitCode` for the failure.
-        title: Short panel header (rendered bold red by :func:`gtk_command`).
+        title: Short panel header (rendered bold red).
         message: Panel body text (usually the underlying exception message).
 
     """
@@ -176,12 +154,23 @@ def _load_job_project(job_dir: Path) -> GlueJobProject:
         ) from None
 
 
-def _docker_unavailable(err: DockerError) -> GtkCommandError:
+def _docker_unavailable(
+    err: DockerError,
+    *,
+    worker_platform: str | None = None,
+) -> GtkCommandError:
     """Map :exc:`DockerError` to a CLI failure panel."""
+    message = str(err)
+    if worker_platform is not None:
+        message = (
+            f"{message}\n"
+            f"Could not run worker-arch Docker ({worker_platform}). "
+            "On ARM hosts this usually needs QEMU (or an amd64 machine)."
+        )
     return GtkCommandError(
         GtkExitCode.UNAVAILABLE,
         "Docker unavailable",
-        str(err),
+        message,
     )
 
 
@@ -194,132 +183,106 @@ def _invalid_dependency(err: RequirementPreparationError) -> GtkCommandError:
     )
 
 
-def _handle_dependency_errors(fn: Callable[[], T]) -> T:
+def _handle_dependency_errors(
+    fn: Callable[[], T],
+    *,
+    worker_platform: str | None = None,
+) -> T:
     """Run ``fn``; map Docker and dep prep errors to GtkCommandError."""
     try:
         return fn()
     except DockerError as err:
-        raise _docker_unavailable(err) from None
+        raise _docker_unavailable(
+            err,
+            worker_platform=worker_platform,
+        ) from None
     except RequirementPreparationError as err:
         raise _invalid_dependency(err) from None
 
 
-def _gtk_command_body(
-    fn: GtkPanelCommand | GtkVarargsCommand,
-    job_dir: DirectoryPath,
-    forwarded: tuple[str, ...],
-) -> Panel | int:
-    """Load the job, invoke ``fn``, and map GtkCommandError to exit codes."""
+def _run_or_test(  # noqa: PLR0915  # pylint: disable=too-many-statements
+    job_dir: Path,
+    platform: Literal["native", "worker"],
+    invoke: Callable[[GlueJobProject], int],
+) -> int:
+    """Load job, invoke run/test, map errors to panels / exit codes."""
     try:
         job = _load_job_project(job_dir)
-
-        if forwarded:
-            return fn(job, *forwarded)
-        return fn(job)
+        worker_platform = (
+            job.runtime.worker_docker_platform
+            if platform == "worker"
+            else None
+        )
+        try:
+            return _handle_dependency_errors(
+                lambda: invoke(job),
+                worker_platform=worker_platform,
+            )
+        except ValueError as err:
+            raise GtkCommandError(
+                GtkExitCode.CONFIG,
+                "Tests directory not found",
+                str(err),
+            ) from None
+        except PipError as err:
+            raise GtkCommandError(
+                GtkExitCode.DATAERR,
+                "Dependency install failed",
+                str(err),
+            ) from None
     except GtkCommandError as err:
         _print_command_error(err)
         return int(err.exit_code)
 
 
-def _register_simple_gtk_command(
-    fn: GtkPanelCommand,
-) -> Callable[[DirectoryPath], Panel | int]:
-    """Register a Cyclopts command with only ``job_dir`` on the CLI."""
-
-    def wrapper(job_dir: DirectoryPath = Path()) -> Panel | int:
-        return _gtk_command_body(fn, job_dir, ())
-
-    wrapper.__name__ = fn.__name__
-    wrapper.__doc__ = fn.__doc__
-    return cast(
-        "Callable[[DirectoryPath], Panel | int]",
-        app.command(wrapper),
-    )
-
-
-def _register_forwarding_gtk_command(
-    fn: GtkVarargsCommand,
-) -> GtkForwardingWrapper:
-    """Register a Cyclopts command that forwards trailing CLI tokens."""
-
-    def wrapper(  # pylint: disable=keyword-arg-before-vararg
-        job_dir: DirectoryPath = Path(),
-        *forwarded: Annotated[str, Parameter(allow_leading_hyphen=True)],
-    ) -> Panel | int:
-        return _gtk_command_body(fn, job_dir, forwarded)
-
-    wrapper.__name__ = fn.__name__
-    wrapper.__doc__ = fn.__doc__
-    return app.command(wrapper)
-
-
-@overload
-def gtk_command(
-    fn: GtkPanelCommand,
-) -> Callable[[DirectoryPath], Panel | int]: ...
-
-
-@overload
-def gtk_command(fn: GtkVarargsCommand) -> GtkForwardingWrapper: ...
-
-
-def gtk_command(
-    fn: GtkPanelCommand | GtkVarargsCommand,
-) -> Callable[[DirectoryPath], Panel | int] | GtkForwardingWrapper:
-    """Register ``fn`` as a Cyclopts command with one ``job_dir`` argument.
-
-    Loads the job via :func:`_load_job_project`, passes the resulting
-    :class:`~aws_glue_toolkit.job.GlueJobProject` to ``fn``, and returns
-    its result. Inner functions without ``*varargs`` take only ``job``;
-    those with ``*varargs`` receive tokens forwarded from the CLI after
-    ``job_dir`` (via ``Parameter(allow_leading_hyphen=True)``).
-
-    Success :class:`~rich.panel.Panel` values are printed by Cyclopts (exit
-    ``0``); integer return values become the process exit code (for example
-    container or pytest status). :exc:`GtkCommandError` (from pyproject
-    load or the command body) is rendered as a red Rich panel on
-    :attr:`~cyclopts.App.error_console` with the matching
-    :class:`GtkExitCode`.
-
-    Copies ``__name__`` and ``__doc__`` from the inner function only (not
-    ``functools.wraps``), so Cyclopts does not expose inner parameters
-    (such as ``--job.name``) on the CLI.
-
-    """
-    has_varargs = any(
-        p.kind == InspectParameter.VAR_POSITIONAL
-        for p in signature(fn).parameters.values()
-    )
-    if has_varargs:
-        return _register_forwarding_gtk_command(cast("GtkVarargsCommand", fn))
-    return _register_simple_gtk_command(cast("GtkPanelCommand", fn))
-
-
 # --- Commands ---
 
 
-@gtk_command
-def check(job: GlueJobProject) -> Panel:
-    """Verify dependencies resolve for the job's Glue runtime.
+@app.command
+def check(
+    job_dir: DirectoryPath = Path(),
+    mode: Annotated[
+        Literal["host", "container"],
+        Parameter(
+            name="--mode",
+            help=(
+                "host (default; no Docker) or container dry-run "
+                "(worker-arch; needs Docker)."
+            ),
+        ),
+    ] = "host",
+) -> Panel | int:
+    """Verify dependencies against Glue runtime pins.
 
-    Resolves job dependencies inside the official AWS Glue local Docker
-    image against bundled Glue runtime pins. Supports PyPI, ``file:`` path,
-    and git/VCS direct references in ``project.dependencies``.
+    ``--mode host`` (default): same gluewheels recipe as ``build --mode
+    host`` (temp dir, discarded). ``--mode container``: dry-run in the Glue
+    image. Does not write zip artifacts.
 
     """
     try:
-        _handle_dependency_errors(lambda: check_job(job))
-    except PipError:
-        raise GtkCommandError(
-            GtkExitCode.DATAERR,
-            "Conflicts detected",
-            "Requirements are unsatisfiable with bundled Glue pins.",
-        ) from None
-    return Panel(
-        "Dependencies resolve against Glue runtime pins.",
-        title="[bold green]No conflicts[/]",
-        border_style="green",
-    )
+        job = _load_job_project(job_dir)
+        worker_platform = (
+            job.runtime.worker_docker_platform if mode == "container" else None
+        )
+        try:
+            _handle_dependency_errors(
+                lambda: check_job(job, mode=mode),
+                worker_platform=worker_platform,
+            )
+        except PipError:
+            raise GtkCommandError(
+                GtkExitCode.DATAERR,
+                "Conflicts detected",
+                "Requirements are unsatisfiable with bundled Glue pins.",
+            ) from None
+        return Panel(
+            "Dependencies resolve against Glue runtime pins.",
+            title="[bold green]No conflicts[/]",
+            border_style="green",
+        )
+    except GtkCommandError as err:
+        _print_command_error(err)
+        return int(err.exit_code)
 
 
 @app.command
@@ -330,8 +293,8 @@ def build(
         Parameter(
             name="--mode",
             help=(
-                "Where to package wheels: host pip (default) or Glue "
-                "container (worker-arch; needs Docker)."
+                "host pip (default) or Glue container "
+                "(worker-arch; needs Docker)."
             ),
         ),
     ] = "host",
@@ -348,9 +311,13 @@ def build(
     """
     try:
         job = _load_job_project(job_dir)
+        worker_platform = (
+            job.runtime.worker_docker_platform if mode == "container" else None
+        )
         try:
             project_dir = _handle_dependency_errors(
                 lambda: build_job(job, mode=mode),
+                worker_platform=worker_platform,
             )
         except (OSError, PipError) as err:
             raise GtkCommandError(
@@ -368,48 +335,62 @@ def build(
         return int(err.exit_code)
 
 
-@gtk_command
-def run(job: GlueJobProject, *job_args: str) -> int:
+@app.command
+def run(  # pylint: disable=keyword-arg-before-vararg
+    job_dir: DirectoryPath = Path(),
+    platform: Annotated[
+        Literal["native", "worker"],
+        Parameter(
+            name="--platform",
+            help=(
+                "native (default; host arch via Docker multi-arch) or "
+                "worker (Glue job workers; may need QEMU on ARM)."
+            ),
+        ),
+    ] = "native",
+    *job_args: Annotated[str, Parameter(allow_leading_hyphen=True)],
+) -> int:
     """Run the job in the official AWS Glue local Docker image.
 
-    Installs ``project.dependencies`` into the ephemeral container when
-    present. Passes ``--JOB_NAME`` from ``project.name`` unless overridden.
+    Installs job dependencies into the ephemeral container when present.
+    Passes ``--JOB_NAME`` from ``project.name`` unless overridden.
     Forwards additional tokens after ``job_dir`` to the job for
     ``getResolvedOptions``. Returns when the job finishes; container stdout
     and stderr pass through unchanged.
 
     """
-    try:
-        return _handle_dependency_errors(lambda: run_job(job, *job_args))
-    except PipError as err:
-        raise GtkCommandError(
-            GtkExitCode.DATAERR,
-            "Dependency install failed",
-            str(err),
-        ) from None
+    return _run_or_test(
+        job_dir,
+        platform,
+        lambda job: run_job(job, *job_args, platform=platform),
+    )
 
 
-@gtk_command
-def test(job: GlueJobProject, *pytest_args: str) -> int:
+@app.command(name="test")
+def pytest_command(  # pylint: disable=keyword-arg-before-vararg
+    job_dir: DirectoryPath = Path(),
+    platform: Annotated[
+        Literal["native", "worker"],
+        Parameter(
+            name="--platform",
+            help=(
+                "native (default; host arch via Docker multi-arch) or "
+                "worker (Glue job workers; may need QEMU on ARM)."
+            ),
+        ),
+    ] = "native",
+    *pytest_args: Annotated[str, Parameter(allow_leading_hyphen=True)],
+) -> int:
     """Run pytest in the official AWS Glue local Docker image.
 
-    Installs ``project.dependencies`` into the ephemeral container when
-    present. Uses ``tool.aws-glue-toolkit.tests`` and sets ``PYTHONPATH`` to
+    Installs job dependencies into the ephemeral container when present.
+    Uses ``tool.aws-glue-toolkit.tests`` and sets ``PYTHONPATH`` to
     ``source``. Forwards additional tokens after ``job_dir`` to ``pytest``.
     Container stdout and stderr pass through unchanged.
 
     """
-    try:
-        return _handle_dependency_errors(lambda: test_job(job, *pytest_args))
-    except ValueError as err:
-        raise GtkCommandError(
-            GtkExitCode.CONFIG,
-            "Tests directory not found",
-            str(err),
-        ) from None
-    except PipError as err:
-        raise GtkCommandError(
-            GtkExitCode.DATAERR,
-            "Dependency install failed",
-            str(err),
-        ) from None
+    return _run_or_test(
+        job_dir,
+        platform,
+        lambda job: test_job(job, *pytest_args, platform=platform),
+    )

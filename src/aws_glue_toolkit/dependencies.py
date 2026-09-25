@@ -389,9 +389,9 @@ def resolve_packages(
     """Run ``pip install --dry-run --report`` and return resolved packages.
 
     Args:
-        prepared: Dependency specs rewritten for container pip.
+        prepared: Dependency specs rewritten for the chosen pip runner.
         runtime: Glue runtime metadata (image pins used as constraints).
-        runner: Callable that runs pip inside the Glue Docker image.
+        runner: :class:`PipRunner` (host or container).
 
     Returns:
         Resolved package name → version for the dry-run install plan.

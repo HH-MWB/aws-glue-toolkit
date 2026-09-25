@@ -17,6 +17,8 @@ Schema rules (unknown keys ignored):
   ``source``
 - ``tool.aws-glue-toolkit.tests`` — optional; defaults to
   :data:`DEFAULT_TESTS_DIR`
+- ``tool.aws-glue-toolkit.dependencies`` — optional; defaults to ``[]``;
+  merged after ``project.dependencies``
 
 Example::
 
@@ -72,7 +74,9 @@ class GlueJobProject:  # pylint: disable=too-many-instance-attributes
         script: Resolved entry script path under :attr:`source_dir`.
         tests_dir: Resolved ``project_dir / tests`` from
             ``[tool.aws-glue-toolkit].tests``.
-        dependencies: ``[project].dependencies`` as an immutable tuple.
+        dependencies: ``[project].dependencies`` then
+            ``[tool.aws-glue-toolkit].dependencies``, as an immutable
+            tuple.
         runtime: Bundled Glue runtime metadata for
             ``[tool.aws-glue-toolkit].glue_version``.
 
@@ -120,6 +124,7 @@ class _AwsGlueToolkit(BaseModel):
     source: str
     script: str
     tests: str = DEFAULT_TESTS_DIR
+    dependencies: list[str] = Field(default_factory=list)
 
 
 class _Tool(BaseModel):
@@ -196,6 +201,9 @@ def load_pyproject(project_dir: Path) -> GlueJobProject:
         source_dir=source_dir,
         script=script_path,
         tests_dir=project_dir / parsed.tool.aws_glue_toolkit.tests,
-        dependencies=tuple(parsed.project.dependencies),
+        dependencies=(
+            *parsed.project.dependencies,
+            *parsed.tool.aws_glue_toolkit.dependencies,
+        ),
         runtime=load_runtime(parsed.tool.aws_glue_toolkit.glue_version),
     )

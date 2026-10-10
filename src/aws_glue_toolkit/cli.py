@@ -1,21 +1,19 @@
-"""``gtk`` — CLI for Glue job dependency check and wheel packaging.
+"""``gtk`` — CLI for Glue job wheel packaging and local runs.
 
 Commands:
 
-- ``check`` / ``build`` — ``--mode host`` (default) or ``container``
+- ``build`` — ``--mode host`` (default) or ``container``
 - ``run`` / ``test`` — ``--platform native`` (default) or ``worker``
 
-``build|check --mode`` chooses where pip runs: ``host`` (default) local
-pip for worker-oriented resolve/packaging (no Docker); ``container``
-worker-arch Glue/build container (may need QEMU on ARM).
+``build --mode`` chooses where pip runs: ``host`` (default) local pip for
+worker-oriented resolve and packaging on the host; ``container`` worker-arch
+Glue build container (may need QEMU on ARM).
 ``run|test --platform`` chooses which Glue image arch to run: ``native``
 (default) matches your machine; ``worker`` matches Glue job workers
 (may need QEMU on ARM).
 
 Example::
 
-    gtk check ./my-glue-job
-    gtk check ./my-glue-job --mode container
     gtk build ./my-glue-job
     gtk build ./my-glue-job --mode container
     gtk run ./my-glue-job
@@ -39,14 +37,13 @@ from pydantic.types import (
 )
 from rich.panel import Panel
 
-from aws_glue_toolkit.app import build as build_job
-from aws_glue_toolkit.app import check as check_job
-from aws_glue_toolkit.app import run as run_job
-from aws_glue_toolkit.app import test as test_job
-from aws_glue_toolkit.dependencies import PipError, RequirementPreparationError
-from aws_glue_toolkit.docker import DockerError
+from aws_glue_toolkit.container import DockerError
 from aws_glue_toolkit.job import load_pyproject
+from aws_glue_toolkit.requirements import PipError, RequirementPreparationError
 from aws_glue_toolkit.runtime import UnsupportedGlueVersionError
+from aws_glue_toolkit.workflows import build as workflow_build
+from aws_glue_toolkit.workflows import run as workflow_run
+from aws_glue_toolkit.workflows import test as workflow_test
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -62,7 +59,7 @@ T = TypeVar("T")
 app = App(
     help=(
         "AWS Glue development lifecycle toolkit. "
-        "build|check --mode chooses where pip runs (host|container); "
+        "build --mode chooses where pip runs (host|container); "
         "run|test --platform chooses Glue image arch (native|worker)."
     ),
     result_action="print_non_int_sys_exit",
@@ -77,12 +74,15 @@ class GtkExitCode(IntEnum):
     Values follow BSD ``sysexits.h`` (64-78): ``0`` is success (returned
     implicitly via a success :class:`~rich.panel.Panel`), ``1`` is reserved for
     unhandled failures. Each member pairs with :exc:`GtkCommandError`.
+
+    ``SOFTWARE`` (70) is for non-pip packaging failures on ``build`` only (for
+    example zip I/O). Pip failures use ``DATAERR`` (65) on all commands.
     """
 
-    DATAERR = 65  # unsatisfiable requirements
+    DATAERR = 65  # pip or dependency failure (build, run, test)
     NOINPUT = 66  # cannot read pyproject.toml
     UNAVAILABLE = 69  # docker unavailable or launch failure
-    SOFTWARE = 70  # wheel build pipeline failed
+    SOFTWARE = 70  # build: zip or host packaging failure
     CONFIG = 78  # invalid or unsupported job config
 
 
@@ -239,55 +239,9 @@ def _run_or_test(  # noqa: PLR0915  # pylint: disable=too-many-statements
 
 
 @app.command
-def check(
+def build(  # noqa: PLR0915  # pylint: disable=too-many-statements
     job_dir: DirectoryPath = Path(),
-    mode: Annotated[
-        Literal["host", "container"],
-        Parameter(
-            name="--mode",
-            help=(
-                "host (default; no Docker) or container dry-run "
-                "(worker-arch; needs Docker)."
-            ),
-        ),
-    ] = "host",
-) -> Panel | int:
-    """Verify dependencies against Glue runtime pins.
-
-    ``--mode host`` (default): same gluewheels recipe as ``build --mode
-    host`` (temp dir, discarded). ``--mode container``: dry-run in the Glue
-    image. Does not write zip artifacts.
-
-    """
-    try:
-        job = _load_job_project(job_dir)
-        worker_platform = (
-            job.runtime.worker_docker_platform if mode == "container" else None
-        )
-        try:
-            _handle_dependency_errors(
-                lambda: check_job(job, mode=mode),
-                worker_platform=worker_platform,
-            )
-        except PipError:
-            raise GtkCommandError(
-                GtkExitCode.DATAERR,
-                "Conflicts detected",
-                "Requirements are unsatisfiable with bundled Glue pins.",
-            ) from None
-        return Panel(
-            "Dependencies resolve against Glue runtime pins.",
-            title="[bold green]No conflicts[/]",
-            border_style="green",
-        )
-    except GtkCommandError as err:
-        _print_command_error(err)
-        return int(err.exit_code)
-
-
-@app.command
-def build(
-    job_dir: DirectoryPath = Path(),
+    /,
     mode: Annotated[
         Literal["host", "container"],
         Parameter(
@@ -305,8 +259,8 @@ def build(
     ``{name}-{version}.gluewheels.zip``. Default ``--mode host``: host
     ``pip wheel --no-deps`` for path/VCS; ``pip download --platform`` or
     sdist→wheel for other packages (portable tags only). ``--mode
-    container``: ``pip wheel`` in the Glue image (worker-arch). Omits Glue
-    image pins.
+    container``: ``pip wheel`` in the Glue image (worker-arch). Omits from
+    gluewheels any package whose resolved version matches an image pin.
 
     """
     try:
@@ -316,10 +270,16 @@ def build(
         )
         try:
             project_dir = _handle_dependency_errors(
-                lambda: build_job(job, mode=mode),
+                lambda: workflow_build(job, mode=mode),
                 worker_platform=worker_platform,
             )
-        except (OSError, PipError) as err:
+        except PipError as err:
+            raise GtkCommandError(
+                GtkExitCode.DATAERR,
+                "Dependency install failed",
+                str(err),
+            ) from None
+        except OSError as err:
             raise GtkCommandError(
                 GtkExitCode.SOFTWARE,
                 "Build failed",
@@ -336,8 +296,10 @@ def build(
 
 
 @app.command
-def run(  # pylint: disable=keyword-arg-before-vararg
+def run(
     job_dir: DirectoryPath = Path(),
+    /,
+    *job_args: Annotated[str, Parameter(allow_leading_hyphen=True)],
     platform: Annotated[
         Literal["native", "worker"],
         Parameter(
@@ -348,7 +310,6 @@ def run(  # pylint: disable=keyword-arg-before-vararg
             ),
         ),
     ] = "native",
-    *job_args: Annotated[str, Parameter(allow_leading_hyphen=True)],
 ) -> int:
     """Run the job in the official AWS Glue local Docker image.
 
@@ -362,13 +323,15 @@ def run(  # pylint: disable=keyword-arg-before-vararg
     return _run_or_test(
         job_dir,
         platform,
-        lambda job: run_job(job, *job_args, platform=platform),
+        lambda job: workflow_run(job, *job_args, platform=platform),
     )
 
 
 @app.command(name="test")
-def pytest_command(  # pylint: disable=keyword-arg-before-vararg
+def pytest_command(
     job_dir: DirectoryPath = Path(),
+    /,
+    *pytest_args: Annotated[str, Parameter(allow_leading_hyphen=True)],
     platform: Annotated[
         Literal["native", "worker"],
         Parameter(
@@ -379,18 +342,18 @@ def pytest_command(  # pylint: disable=keyword-arg-before-vararg
             ),
         ),
     ] = "native",
-    *pytest_args: Annotated[str, Parameter(allow_leading_hyphen=True)],
 ) -> int:
     """Run pytest in the official AWS Glue local Docker image.
 
     Installs job dependencies into the ephemeral container when present.
     Uses ``tool.aws-glue-toolkit.tests`` and sets ``PYTHONPATH`` to
-    ``source``. Forwards additional tokens after ``job_dir`` to ``pytest``.
+    ``source`` (and the pip install target when job dependencies are
+    present). Forwards additional tokens after ``job_dir`` to ``pytest``.
     Container stdout and stderr pass through unchanged.
 
     """
     return _run_or_test(
         job_dir,
         platform,
-        lambda job: test_job(job, *pytest_args, platform=platform),
+        lambda job: workflow_test(job, *pytest_args, platform=platform),
     )

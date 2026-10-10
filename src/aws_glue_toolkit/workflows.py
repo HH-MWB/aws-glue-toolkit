@@ -1,16 +1,14 @@
-"""Application orchestration for ``gtk`` check, build, run, and test.
+"""Application orchestration for ``gtk`` build, run, and test.
 
-Wires :mod:`aws_glue_toolkit.dependencies` to
-:mod:`aws_glue_toolkit.docker` (host pip for ``build|check --mode host``,
-container pip for ``build|check --mode container``, ``run``, and
-``test``). No Rich panels, Cyclopts, or exit codes — callers
-in :mod:`aws_glue_toolkit.cli` map exceptions to user-facing output.
+Wires :mod:`aws_glue_toolkit.requirements` and :mod:`aws_glue_toolkit.wheels`
+to :mod:`aws_glue_toolkit.container` (host pip for ``build --mode host``,
+container pip for ``build --mode container``, ``run``, and ``test``).
+No Rich panels, Cyclopts, or exit codes — callers in
+:mod:`aws_glue_toolkit.cli` map exceptions to user-facing output.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Literal
 
 from aws_glue_toolkit.artifacts import (
@@ -18,25 +16,26 @@ from aws_glue_toolkit.artifacts import (
     stage_gluewheels_zip,
     write_gluewheels_tree,
 )
-from aws_glue_toolkit.dependencies import (
-    bundle_wheels,
-    prepare_requirements,
-    resolve_packages,
-    staged_requirements,
-)
-from aws_glue_toolkit.docker import (
+from aws_glue_toolkit.container import (
+    PytestContainerEntry,
+    SparkContainerEntry,
     host_pip_runner,
     pip_runner,
-    run_job,
-    run_tests,
+    run_in_glue_container,
 )
+from aws_glue_toolkit.requirements import (
+    open_dependency_session,
+    staged_requirements,
+)
+from aws_glue_toolkit.wheels import bundle_wheels
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from aws_glue_toolkit.job import GlueJobProject
 
 __all__ = [
     "build",
-    "check",
     "run",
     "test",
 ]
@@ -50,48 +49,18 @@ def _bundle_wheels_for_mode(
 ) -> dict[str, str]:
     """Prepare deps and run :func:`bundle_wheels` for ``mode``."""
     host = mode == "host"
-    return bundle_wheels(
-        prepared=prepare_requirements(
-            job.dependencies,
-            job.project_dir,
-            for_container=not host,
-        ),
-        runtime=job.runtime,
-        dest=dest,
+    session = open_dependency_session(
+        job,
+        in_container=not host,
         runner=host_pip_runner() if host else pip_runner(job),
+    )
+    return bundle_wheels(
+        prepared=session.prepared,
+        policy=session.policy,
+        dest=dest,
+        runner=session.runner,
         cross_platform=host,
     )
-
-
-def check(
-    job: GlueJobProject,
-    *,
-    mode: Literal["host", "container"],
-) -> None:
-    """Verify job dependencies against Glue runtime pins.
-
-    Args:
-        job: Resolved job config from
-            :func:`~aws_glue_toolkit.job.load_pyproject`.
-        mode: ``"host"`` — same gluewheels recipe as ``build --mode host``
-            (temp dir, discarded); ``"container"`` — dry-run in the Glue
-            image.
-
-    Raises:
-        PipError: Unsatisfiable requirements or non-portable host wheels.
-        RequirementPreparationError: A dependency spec could not be prepared.
-        DockerError: Docker unavailable when ``mode`` is ``"container"``.
-
-    """
-    if mode == "container":
-        resolve_packages(
-            prepared=prepare_requirements(job.dependencies, job.project_dir),
-            runtime=job.runtime,
-            runner=pip_runner(job),
-        )
-        return
-    with TemporaryDirectory() as tmp:
-        _bundle_wheels_for_mode(job, Path(tmp), mode="host")
 
 
 def build(
@@ -147,8 +116,8 @@ def run(
         job: Resolved job config from
             :func:`~aws_glue_toolkit.job.load_pyproject`.
         *job_args: Tokens forwarded to the job after ``--JOB_NAME``.
-        platform: ``"native"`` omits Docker ``--platform`` (host arch);
-            ``"worker"`` forces ``runtime.worker_docker_platform``.
+        platform: ``"native"`` uses the host multi-arch Glue image;
+            ``"worker"`` uses ``runtime.worker_docker_platform``.
 
     Returns:
         Container exit code.
@@ -161,17 +130,30 @@ def run(
     docker_platform = (
         None if platform == "native" else job.runtime.worker_docker_platform
     )
+    entry = SparkContainerEntry(job_args=job_args)
     if not job.dependencies:
-        return run_job(job, *job_args, platform=docker_platform)
-
-    prepared = prepare_requirements(job.dependencies, job.project_dir)
-    with staged_requirements(prepared, job.runtime) as (_work, mounts):
-        return run_job(
+        return run_in_glue_container(
             job,
-            *job_args,
             platform=docker_platform,
+            entry=entry,
+            dependency_session=None,
+        )
+
+    session = open_dependency_session(
+        job,
+        in_container=True,
+        runner=pip_runner(job),
+    )
+    with staged_requirements(session.prepared, session.policy) as (
+        _work,
+        mounts,
+    ):
+        return run_in_glue_container(
+            job,
+            platform=docker_platform,
+            entry=entry,
+            dependency_session=session,
             extra_volumes=mounts,
-            install_deps=True,
         )
 
 
@@ -189,8 +171,8 @@ def test(
         job: Resolved job config from
             :func:`~aws_glue_toolkit.job.load_pyproject`.
         *pytest_args: Tokens forwarded to ``pytest``.
-        platform: ``"native"`` omits Docker ``--platform`` (host arch);
-            ``"worker"`` forces ``runtime.worker_docker_platform``.
+        platform: ``"native"`` uses the host multi-arch Glue image;
+            ``"worker"`` uses ``runtime.worker_docker_platform``.
 
     Returns:
         Container exit code.
@@ -201,18 +183,35 @@ def test(
         DockerError: Docker is unavailable or the container failed to launch.
 
     """
+    if not job.tests_dir.is_dir():
+        msg = f"tests directory not found: {job.tests_dir}"
+        raise ValueError(msg)
+
     docker_platform = (
         None if platform == "native" else job.runtime.worker_docker_platform
     )
+    entry = PytestContainerEntry(pytest_args=pytest_args)
     if not job.dependencies:
-        return run_tests(job, *pytest_args, platform=docker_platform)
-
-    prepared = prepare_requirements(job.dependencies, job.project_dir)
-    with staged_requirements(prepared, job.runtime) as (_work, mounts):
-        return run_tests(
+        return run_in_glue_container(
             job,
-            *pytest_args,
             platform=docker_platform,
+            entry=entry,
+            dependency_session=None,
+        )
+
+    session = open_dependency_session(
+        job,
+        in_container=True,
+        runner=pip_runner(job),
+    )
+    with staged_requirements(session.prepared, session.policy) as (
+        _work,
+        mounts,
+    ):
+        return run_in_glue_container(
+            job,
+            platform=docker_platform,
+            entry=entry,
+            dependency_session=session,
             extra_volumes=mounts,
-            install_deps=True,
         )

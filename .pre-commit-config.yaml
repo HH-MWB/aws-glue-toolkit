@@ -28,18 +28,18 @@ repos:
       - id: yamllint
 
   - repo: https://github.com/astral-sh/uv-pre-commit
-    rev: 0.12.9
+    rev: 0.12.22
     hooks:
       - id: uv-lock
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.5
+    rev: v0.16.10
     hooks:
       - id: ruff-format
       - id: ruff-check
 
   - repo: https://github.com/pylint-dev/pylint
-    rev: v4.0.8
+    rev: v4.1.2
     hooks:
       - id: pylint
         additional_dependencies:
@@ -48,7 +48,7 @@ repos:
           - pydantic>=2,<3
 
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v2.3.1
+    rev: v2.4.0
     hooks:
       - id: mypy
         additional_dependencies:
@@ -62,7 +62,7 @@ repos:
       - id: bandit
 
   - repo: https://github.com/semgrep/pre-commit
-    rev: v1.175.0
+    rev: v1.179.0
     hooks:
       - id: semgrep
         args: ["--config", "p/python", "--error"]

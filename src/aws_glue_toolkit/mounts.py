@@ -1,7 +1,7 @@
 """Container mount paths and host-to-container path mapping.
 
 Single source for workspace and temporary mount constants used by
-:mod:`aws_glue_toolkit.dependencies` and :mod:`aws_glue_toolkit.docker`.
+:mod:`aws_glue_toolkit.requirements` and :mod:`aws_glue_toolkit.container`.
 
 :data:`RUN_WRAPPER_MOUNT` is the container path of the ``gtk run`` entry
 script (:mod:`aws_glue_toolkit.run_wrapper`).

@@ -5,7 +5,8 @@ Private Pydantic models mirror the file layout and validate input.
 Glue runtime metadata for ``tool.aws-glue-toolkit.glue_version``, and returns
 :class:`GlueJobProject` with defaults applied.
 
-Schema rules (unknown keys ignored):
+Loaded fields (``[project]`` and ``[tool.aws-glue-toolkit]``; other keys
+skipped):
 
 - ``project.name`` — required
 - ``project.version`` — optional; defaults to :data:`DEFAULT_PACKAGE_VERSION`
@@ -60,7 +61,7 @@ DEFAULT_TESTS_DIR: Final[str] = "tests"
 
 @dataclass(frozen=True, slots=True)
 class GlueJobProject:  # pylint: disable=too-many-instance-attributes
-    """Resolved job config for ``dependencies``, ``artifacts``, and ``cli``.
+    """Resolved job config for workflows, ``artifacts``, and ``cli``.
 
     Built only by :func:`load_pyproject`.
     Fields are fully resolved (no ``None`` for :attr:`version`).

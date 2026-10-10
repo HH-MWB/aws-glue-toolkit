@@ -40,9 +40,9 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/HH-MWB/aws-glue-toolkit"
-Issues = "https://github.com/HH-MWB/aws-glue-toolkit/issues"
-Changelog = "https://github.com/HH-MWB/aws-glue-toolkit/releases"
+Repository = "https://github.com/awesome-glue/aws-glue-toolkit"
+Issues = "https://github.com/awesome-glue/aws-glue-toolkit/issues"
+Changelog = "https://github.com/awesome-glue/aws-glue-toolkit/releases"
 PyPI = "https://pypi.org/project/aws-glue-toolkit/"
 
 [project.scripts]

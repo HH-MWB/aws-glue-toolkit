@@ -40,6 +40,7 @@ dependencies = [
 ]
 
 [project.urls]
+Homepage = "https://awesome-glue.github.io/aws-glue-toolkit/"
 Repository = "https://github.com/awesome-glue/aws-glue-toolkit"
 Issues = "https://github.com/awesome-glue/aws-glue-toolkit/issues"
 Changelog = "https://github.com/awesome-glue/aws-glue-toolkit/releases"

@@ -12,3 +12,7 @@ init:
 # Run pre-commit on staged files.
 lint:
     uv run pre-commit run
+
+# Serve documentation locally with live-reload.
+docs:
+    uv run --with zensical zensical serve

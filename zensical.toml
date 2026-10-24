@@ -1,0 +1,60 @@
+# Zensical config for AWS Glue Toolkit
+
+[project]
+site_name = "AWS Glue Toolkit"
+site_description = "A streamlined CLI utility designed to simplify the AWS Glue development lifecycle."
+site_url = "https://awesome-glue.github.io/aws-glue-toolkit/"
+repo_url = "https://github.com/awesome-glue/aws-glue-toolkit"
+
+nav = [
+  { "Home" = "index.md" },
+]
+
+# -- Theme -------------------------------------------------------------------
+
+[project.theme]
+features = [
+  "content.code.annotate",
+  "content.code.copy",
+  "navigation.footer",
+  "navigation.instant",
+  "navigation.top",
+  "search.highlight",
+]
+
+[project.theme.icon]
+repo = "fontawesome/brands/github"
+
+# Color scheme: auto / light / dark
+[[project.theme.palette]]
+media    = "(prefers-color-scheme)"
+toggle   = { icon = "lucide/sun-moon", name = "Follow system" }
+
+[[project.theme.palette]]
+media    = "(prefers-color-scheme: light)"
+scheme   = "default"
+toggle   = { icon = "lucide/sun", name = "Light mode" }
+
+[[project.theme.palette]]
+media    = "(prefers-color-scheme: dark)"
+scheme   = "slate"
+toggle   = { icon = "lucide/moon", name = "Dark mode" }
+
+# -- Markdown extensions ------------------------------------------------------
+
+[project.markdown_extensions]
+admonition = {}
+
+[project.markdown_extensions.pymdownx]
+details      = {}
+inlinehilite = {}
+
+[project.markdown_extensions.pymdownx.highlight]
+anchor_linenums     = true
+line_spans          = "__span"
+pygments_lang_class = true
+
+[project.markdown_extensions.pymdownx.superfences]
+custom_fences = [
+  { name = "mermaid", class = "mermaid", format = "pymdownx.superfences.fence_code_format" },
+]

@@ -1,5 +1,9 @@
+# ============================================================================
+# Build System & Package Metadata (PEP 517 / PEP 621 / PEP 735)
+# ============================================================================
+
 [build-system]
-requires = ["uv_build>=0.11,<0.12"]
+requires = ["uv_build>=0.11,<1"]
 build-backend = "uv_build"
 
 [project]
@@ -12,31 +16,31 @@ license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "HH-MWB", email = "h.hong@mail.com" }]
 keywords = [
-    "aws",
-    "cli",
-    "docker",
-    "etl",
-    "glue",
-    "spark",
+  "aws",
+  "cli",
+  "docker",
+  "etl",
+  "glue",
+  "spark",
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Environment :: Console",
-    "Intended Audience :: Developers",
-    "Operating System :: OS Independent",
-    "Programming Language :: Python :: 3 :: Only",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
-    "Programming Language :: Python :: 3.14",
-    "Programming Language :: Python :: 3.15",
-    "Topic :: Software Development :: Build Tools",
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: 3.15",
+  "Topic :: Software Development :: Build Tools",
 ]
 dependencies = [
-    "cyclopts>=4,<5",
-    "packaging>=24,<26",
-    "pip>=22.2,<27",
-    "pydantic>=2,<3",
+  "cyclopts>=4,<5",
+  "packaging>=24,<28",
+  "pip>=22.2,<27",
+  "pydantic>=2,<3",
 ]
 
 [project.urls]
@@ -51,50 +55,12 @@ gtk = "aws_glue_toolkit.cli:app"
 
 [dependency-groups]
 dev = [
-    "pre-commit",
+  "pre-commit",
 ]
 
-[tool.mypy]
-python_version = "3.11"
-mypy_path = ["src"]
-plugins = ["pydantic.mypy"]
-explicit_package_bases = true
-strict = true
-disallow_any_generics = true
-disallow_any_unimported = true
-disallow_any_explicit = true
-disallow_untyped_defs = true
-disallow_untyped_calls = true
-disallow_untyped_decorators = true
-strict_equality = true
-strict_equality_for_none = true
-warn_redundant_casts = true
-warn_return_any = true
-warn_unreachable = true
-warn_unused_ignores = true
-enable_error_code = [
-    "deprecated",
-    "exhaustive-match",
-    "explicit-override",
-    "ignore-without-code",
-    "possibly-undefined",
-    "redundant-expr",
-    "redundant-self",
-    "truthy-bool",
-    "unimported-reveal",
-    "unused-awaitable",
-]
-
-[tool.pydantic-mypy]
-init_forbid_extra = true
-init_typed = true
-
-[tool.pylint.design]
-exclude-too-few-public-methods = ["pydantic.*"]
-max-statements = 10
-
-[tool.pylint.format]
-max-line-length = 79
+# ============================================================================
+# Linting & Formatting
+# ============================================================================
 
 [tool.ruff]
 line-length = 79
@@ -105,13 +71,118 @@ force-exclude = true
 [tool.ruff.lint]
 select = ["ALL"]
 ignore = [
-    "CPY001",  # No per-file copyright headers in this project
-    "D203", # Incompatible with D211 (no-blank-line-before-class)
-    "D213", # Incompatible with D212 (multi-line-summary-first-line)
+  "CPY001", # No per-file copyright headers in this project
+  "D203",   # Incompatible with D211 (no-blank-line-before-class)
+  "D213",   # Incompatible with D212 (multi-line-summary-first-line)
 ]
+
+[tool.ruff.lint.flake8-type-checking]
+strict = true
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+known-first-party = ["aws_glue_toolkit"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 5
 
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
 [tool.ruff.lint.pylint]
 max-statements = 10
+
+# ============================================================================
+# Type Checking
+# ============================================================================
+
+[tool.mypy]
+python_version = "3.11"
+mypy_path = ["src"]
+plugins = ["pydantic.mypy"]
+explicit_package_bases = true
+strict = true
+extra_checks = true
+local_partial_types = true
+
+# Stricter checks beyond default strict mode
+disallow_any_explicit = true
+disallow_any_generics = true
+disallow_any_unimported = true
+disallow_untyped_calls = true
+disallow_untyped_decorators = true
+disallow_untyped_defs = true
+strict_equality = true
+strict_equality_for_none = true
+warn_redundant_casts = true
+warn_return_any = true
+warn_unreachable = true
+warn_unused_ignores = true
+
+# Extended error codes
+enable_error_code = [
+  "deprecated",
+  "exhaustive-match",
+  "explicit-override",
+  "ignore-without-code",
+  "possibly-undefined",
+  "redundant-expr",
+  "redundant-self",
+  "truthy-bool",
+  "truthy-function",
+  "truthy-iterable",
+  "unimported-reveal",
+  "unused-awaitable",
+]
+
+# Output formatting
+pretty = true
+show_column_numbers = true
+show_error_codes = true
+show_error_context = true
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+
+[tool.pyright]
+pythonVersion = "3.11"
+
+include = ["src"]
+typeCheckingMode = "strict"
+deprecateTypingAliases = true
+reportMissingModuleSource = "none"
+
+# Diagnostic rules elevated to error beyond strict mode
+reportCallInDefaultInitializer = "error"
+reportImplicitOverride = "error"
+reportImplicitStringConcatenation = "error"
+reportImportCycles = "error"
+reportMissingSuperCall = "error"
+reportPropertyTypeMismatch = "error"
+reportUninitializedInstanceVariable = "error"
+reportUnnecessaryCast = "error"
+reportUnnecessaryComparison = "error"
+reportUnnecessaryContains = "error"
+reportUnnecessaryIsInstance = "error"
+reportUnnecessaryTypeIgnoreComment = "error"
+reportUnusedCallResult = "error"
+
+# ============================================================================
+# Security Analysis
+# ============================================================================
+
+[tool.bandit]
+exclude_dirs = ["site", "docs"]
+
+[tool.bandit.try_except_pass]
+check_typed_exception = true
+
+# ============================================================================
+# Spelling & Quality
+# ============================================================================
+
+[tool.codespell]
+check-filenames = true
+check-hidden = true
+skip = "uv.lock"

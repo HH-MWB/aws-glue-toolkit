@@ -53,20 +53,21 @@ The stable interface is the **`gtk` command-line interface**. The README documen
 ## Making changes
 
 1. Edit code under `src/aws_glue_toolkit/`.
-2. Run lint and format checks on staged files:
+2. Run lint and formatting checks across all files:
 
    ```bash
    just lint
    ```
 
-   For a full sweep that matches continuous integration:
-
-   ```bash
-   uv run pre-commit run --all-files
-   ```
-
 3. If you changed user-facing behavior, update [README.md](README.md). For advanced or niche behavior that does not belong in the README, describe it in the commit message or pull request body.
 4. Open a pull request with a small, focused diff.
+
+## Code style
+
+This project enforces strict code quality standards configured in `pyproject.toml`:
+- **Line length:** 79 characters (PEP 8).
+- **Docstrings:** Required on all modules, functions, classes, and public APIs (`pydocstyle` Google convention).
+- **Typing:** Fully type-annotated (`mypy` and `pyright` strict modes).
 
 ## Commit messages
 

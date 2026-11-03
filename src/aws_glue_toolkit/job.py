@@ -40,10 +40,12 @@ from typing import TYPE_CHECKING, Final
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from aws_glue_toolkit.runtime import GlueRuntimeMetadata, load_runtime
+from aws_glue_toolkit.runtime import load_runtime
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from aws_glue_toolkit.runtime import GlueRuntimeMetadata
 
 __all__ = [
     "DEFAULT_PACKAGE_VERSION",

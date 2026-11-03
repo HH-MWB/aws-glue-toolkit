@@ -27,18 +27,18 @@ repo = "fontawesome/brands/github"
 
 # Color scheme: auto / light / dark
 [[project.theme.palette]]
-media    = "(prefers-color-scheme)"
-toggle   = { icon = "lucide/sun-moon", name = "Follow system" }
+media = "(prefers-color-scheme)"
+toggle = { icon = "lucide/sun-moon", name = "Follow system" }
 
 [[project.theme.palette]]
-media    = "(prefers-color-scheme: light)"
-scheme   = "default"
-toggle   = { icon = "lucide/sun", name = "Light mode" }
+media = "(prefers-color-scheme: light)"
+scheme = "default"
+toggle = { icon = "lucide/sun", name = "Light mode" }
 
 [[project.theme.palette]]
-media    = "(prefers-color-scheme: dark)"
-scheme   = "slate"
-toggle   = { icon = "lucide/moon", name = "Dark mode" }
+media = "(prefers-color-scheme: dark)"
+scheme = "slate"
+toggle = { icon = "lucide/moon", name = "Dark mode" }
 
 # -- Markdown extensions ------------------------------------------------------
 
@@ -46,12 +46,12 @@ toggle   = { icon = "lucide/moon", name = "Dark mode" }
 admonition = {}
 
 [project.markdown_extensions.pymdownx]
-details      = {}
+details = {}
 inlinehilite = {}
 
 [project.markdown_extensions.pymdownx.highlight]
-anchor_linenums     = true
-line_spans          = "__span"
+anchor_linenums = true
+line_spans = "__span"
 pygments_lang_class = true
 
 [project.markdown_extensions.pymdownx.superfences]

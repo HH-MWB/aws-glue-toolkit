@@ -41,9 +41,11 @@ from aws_glue_toolkit.container import DockerError
 from aws_glue_toolkit.job import load_pyproject
 from aws_glue_toolkit.requirements import PipError, RequirementPreparationError
 from aws_glue_toolkit.runtime import UnsupportedGlueVersionError
-from aws_glue_toolkit.workflows import build as workflow_build
-from aws_glue_toolkit.workflows import run as workflow_run
-from aws_glue_toolkit.workflows import test as workflow_test
+from aws_glue_toolkit.workflows import (
+    build as workflow_build,
+    run as workflow_run,
+    test as workflow_test,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -106,6 +108,7 @@ class GtkCommandError(Exception):
         message: str,
     ) -> None:
         """Store exit code, title, and message for the command shell."""
+        super().__init__(message)
         self.exit_code = exit_code
         self.title = title
         self.message = message
@@ -237,10 +240,12 @@ def _run_or_test(  # noqa: PLR0915  # pylint: disable=too-many-statements
 
 # --- Commands ---
 
+_DEFAULT_JOB_DIR: DirectoryPath = Path()
+
 
 @app.command
 def build(  # noqa: PLR0915  # pylint: disable=too-many-statements
-    job_dir: DirectoryPath = Path(),
+    job_dir: DirectoryPath = _DEFAULT_JOB_DIR,
     /,
     mode: Annotated[
         Literal["host", "container"],
@@ -297,7 +302,7 @@ def build(  # noqa: PLR0915  # pylint: disable=too-many-statements
 
 @app.command
 def run(
-    job_dir: DirectoryPath = Path(),
+    job_dir: DirectoryPath = _DEFAULT_JOB_DIR,
     /,
     *job_args: Annotated[str, Parameter(allow_leading_hyphen=True)],
     platform: Annotated[
@@ -329,7 +334,7 @@ def run(
 
 @app.command(name="test")
 def pytest_command(
-    job_dir: DirectoryPath = Path(),
+    job_dir: DirectoryPath = _DEFAULT_JOB_DIR,
     /,
     *pytest_args: Annotated[str, Parameter(allow_leading_hyphen=True)],
     platform: Annotated[

@@ -1,68 +1,112 @@
 ---
 repos:
+  # -------------------------------------------------------------------------
+  # Repository Safety & File Hygiene
+  # -------------------------------------------------------------------------
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
-      - id: check-merge-conflict
-      - id: check-case-conflict
+      # Git & filesystem blockers
       - id: check-added-large-files
-      - id: trailing-whitespace
-        args: [--markdown-linebreak-ext=md]
-      - id: end-of-file-fixer
+        args: ['--maxkb=10']
+        exclude: ^uv\.lock$
+      - id: check-case-conflict
+      - id: check-executables-have-shebangs
+      - id: check-merge-conflict
+        args: [--assume-in-merge]
+      - id: check-shebang-scripts-are-executable
+      - id: detect-private-key
+
+      # Text normalizers
       - id: fix-byte-order-marker
       - id: mixed-line-ending
         args: [--fix=lf]
-      - id: check-yaml
-      - id: check-toml
-      - id: detect-private-key
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
 
-  - repo: https://github.com/codespell-project/codespell
-    rev: v2.4.3
+  # -------------------------------------------------------------------------
+  # Environment & Lockfile Consistency
+  # -------------------------------------------------------------------------
+  - repo: https://github.com/astral-sh/uv-pre-commit
+    rev: 0.13.6
     hooks:
-      - id: codespell
+      - id: uv-lock
+
+  # -------------------------------------------------------------------------
+  # Code Formatting & Linting (Python)
+  # -------------------------------------------------------------------------
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.3
+    hooks:
+      - id: ruff-check
+        args: [--exit-non-zero-on-fix]
+      - id: ruff-format
+
+  # -------------------------------------------------------------------------
+  # Configuration & CI/CD Workflow Linting
+  # -------------------------------------------------------------------------
+  - repo: https://github.com/ComPWA/taplo-pre-commit
+    rev: v0.9.3
+    hooks:
+      - id: taplo-format
+        exclude: ^uv\.lock$
+      - id: taplo-lint
+        args: [--no-schema]
         exclude: ^uv\.lock$
 
   - repo: https://github.com/adrienverge/yamllint
     rev: v1.38.0
     hooks:
       - id: yamllint
+        args: [--strict]
 
-  - repo: https://github.com/astral-sh/uv-pre-commit
-    rev: 0.12.22
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.12
     hooks:
-      - id: uv-lock
+      - id: actionlint
 
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.10
+  # -------------------------------------------------------------------------
+  # Spelling & Documentation
+  # -------------------------------------------------------------------------
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.4.3
     hooks:
-      - id: ruff-format
-      - id: ruff-check
+      - id: codespell
 
-  - repo: https://github.com/pylint-dev/pylint
-    rev: v4.1.2
+  # -------------------------------------------------------------------------
+  # Static Type Checking
+  # -------------------------------------------------------------------------
+  - repo: https://github.com/RobertCraigie/pyright-python
+    rev: v1.1.414
     hooks:
-      - id: pylint
+      - id: pyright
         additional_dependencies:
           - cyclopts>=4,<5
-          - packaging>=24,<26
+          - packaging>=24,<28
           - pydantic>=2,<3
 
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v2.4.0
+    rev: v2.4.1
     hooks:
       - id: mypy
         additional_dependencies:
           - cyclopts>=4,<5
-          - packaging>=24,<26
+          - packaging>=24,<28
           - pydantic>=2,<3
 
+  # -------------------------------------------------------------------------
+  # Security Analysis & SAST
+  # -------------------------------------------------------------------------
   - repo: https://github.com/PyCQA/bandit
     rev: 1.9.4
     hooks:
       - id: bandit
+        args: ["-c", "pyproject.toml"]
+        additional_dependencies: ["bandit[toml]"]
 
   - repo: https://github.com/semgrep/pre-commit
-    rev: v1.179.0
+    rev: v1.183.0
     hooks:
       - id: semgrep
         args: ["--config", "p/python", "--error"]

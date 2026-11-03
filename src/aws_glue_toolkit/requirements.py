@@ -13,7 +13,7 @@ Public API: :class:`DependencySession`, :func:`open_dependency_session`,
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,7 +33,7 @@ from aws_glue_toolkit.mounts import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Generator, Mapping
 
     from aws_glue_toolkit.job import GlueJobProject
     from aws_glue_toolkit.runtime import GlueRuntimeMetadata
@@ -51,8 +51,10 @@ __all__ = [
     "open_dependency_session",
     "pip_error_from_returncode",
     "pip_install_target_args",
+    "pip_workspace",
     "prepare_requirements",
     "staged_requirements",
+    "volume_mounts_for",
 ]
 
 
@@ -267,7 +269,7 @@ def _container_file_url(
         relative = host_path.relative_to(project_dir)
         return f"file://{WORKSPACE_MOUNT}/{relative.as_posix()}"
     except ValueError:
-        pass
+        pass  # nosec B110
 
     # External paths get a dedicated EXT_MOUNT_PREFIX bind mount.
     mount_root, target = _mount_target(host_path)
@@ -405,21 +407,21 @@ def open_dependency_session(
 
 
 @contextmanager
-def _pip_workspace(
+def pip_workspace(
     requirement_specs: Sequence[str],
     runtime_package_pins: Mapping[str, str],
-) -> Iterator[Path]:
+) -> Generator[Path, None, None]:
     """Provide a temporary directory prepared for ``pip``."""
     with TemporaryDirectory() as tmp:
         work = Path(tmp)
         work.chmod(0o777)
 
         # Input files consumed by pip inside the container.
-        (work / "requirements.in").write_text(
+        _ = (work / "requirements.in").write_text(
             "\n".join(requirement_specs),
             encoding="utf-8",
         )
-        (work / "constraints.txt").write_text(
+        _ = (work / "constraints.txt").write_text(
             "\n".join(
                 f"{name}=={version}"
                 for name, version in runtime_package_pins.items()
@@ -429,7 +431,10 @@ def _pip_workspace(
         yield work
 
 
-def _volume_mounts_for(
+_pip_workspace = pip_workspace
+
+
+def volume_mounts_for(
     work: Path,
     prepared: PreparedRequirements,
     *,
@@ -443,6 +448,9 @@ def _volume_mounts_for(
     return mounts
 
 
+_volume_mounts_for = volume_mounts_for
+
+
 # --- Public pip API ---
 
 
@@ -450,7 +458,7 @@ def _volume_mounts_for(
 def staged_requirements(
     prepared: PreparedRequirements,
     policy: GlueImagePinPolicy,
-) -> Iterator[tuple[Path, Sequence[tuple[Path, str]]]]:
+) -> Generator[tuple[Path, Sequence[tuple[Path, str]]], None, None]:
     """Stage requirements files and yield pip work dir plus volume mounts.
 
     Args:

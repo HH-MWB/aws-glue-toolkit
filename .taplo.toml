@@ -1,0 +1,40 @@
+# ============================================================================
+# Taplo TOML Linter & Formatter Configuration
+# ============================================================================
+
+include = ["**/*.toml"]
+exclude = ["uv.lock"]
+
+[formatting]
+# Align column width with project's Ruff line length
+column_width = 79
+
+# Enforce clean indentation (2 spaces for multiline tables & arrays)
+indent_string = "  "
+
+# Strict blank line hygiene: disallow multiple consecutive blank lines
+allowed_blank_lines = 1
+
+# Enforce trailing newline and LF line endings
+trailing_newline = true
+crlf = false
+
+# Strict array formatting:
+# - Enforce trailing commas on all multiline arrays (cleaner git diffs)
+# - Automatically expand arrays to multiline if they exceed column_width
+# - Do NOT collapse multiline arrays into a single line (preserves list layout)
+array_trailing_comma = true
+array_auto_collapse = false
+array_auto_expand = true
+
+# Align consecutive inline comments vertically within blocks
+align_comments = true
+
+# Standard spacing for inline tables (e.g. { name = "..." })
+compact_inline_tables = false
+
+# Preserve human-logical metadata order (e.g. name, version, description)
+reorder_keys = false
+
+# Preserve author item ordering in arrays (e.g. group includes before dependencies)
+reorder_arrays = false

@@ -35,10 +35,9 @@ from dataclasses import dataclass
 from importlib.resources import as_file, files
 from io import StringIO
 from pathlib import Path
-from shlex import join as shlex_join
-from shlex import quote as shlex_quote
+from shlex import join as shlex_join, quote as shlex_quote
 from shutil import which
-from subprocess import CompletedProcess, run  # nosec B404
+from subprocess import run  # nosec B404
 from sys import executable
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
@@ -58,17 +57,17 @@ from aws_glue_toolkit.mounts import (
     rewrite_path_arg,
 )
 from aws_glue_toolkit.requirements import (
-    DependencySession,
     PipError,
-    PipRunner,
     pip_error_from_returncode,
     pip_install_target_args,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
+    from collections.abc import Generator, Sequence
+    from subprocess import CompletedProcess  # nosec B404
 
     from aws_glue_toolkit.job import GlueJobProject
+    from aws_glue_toolkit.requirements import DependencySession, PipRunner
 
 __all__ = [
     "ContainerEntry",
@@ -346,14 +345,16 @@ def _pip_conf_ini_from_merged(merged: dict[str, object]) -> str:
 
 
 @contextmanager
-def _host_pip_config_bind() -> Iterator[
-    tuple[tuple[Path, str], tuple[str, ...]]
+def _host_pip_config_bind() -> Generator[
+    tuple[tuple[Path, str], tuple[str, ...]],
+    None,
+    None,
 ]:
     """Yield a pip.conf volume mount and ``PIP_CONFIG_FILE`` env token."""
     ini = _pip_conf_ini_from_merged(_merged_pip_configuration())
     with TemporaryDirectory() as tmp:
         conf_path = Path(tmp) / "pip.conf"
-        conf_path.write_text(ini, encoding="utf-8")
+        _ = conf_path.write_text(ini, encoding="utf-8")
         yield (
             (conf_path, PIP_CONFIG_MOUNT),
             (f"PIP_CONFIG_FILE={PIP_CONFIG_MOUNT}",),

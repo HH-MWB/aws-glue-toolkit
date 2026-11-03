@@ -1,2 +1,17 @@
+# Byte-compiled files
 __pycache__/
+*.pyc
+
+# Virtual environment
+.venv/
+
+# Build artifacts
+dist/
+*.egg-info/
+
+# Test coverage
+.coverage
+coverage.xml
+
+# Documentation site build
 site/

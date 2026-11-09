@@ -5,8 +5,7 @@ name: Deploy docs to GitHub Pages
 on:
   push:
     branches:
-      # TODO: Switch to `main` once ready for production release.
-      - develop
+      - main
   workflow_dispatch:
 
 permissions:

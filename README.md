@@ -103,4 +103,4 @@ Success is `0`; unhandled errors are `1`. **`build`** uses the codes above. **`r
 
 ## License
 
-This project is licensed under the MIT License — see the [LICENSE](https://github.com/HH-MWB/aws-glue-toolkit/blob/main/LICENSE) file for details.
+This project is licensed under the MIT License — see the [LICENSE](https://github.com/awesome-glue/aws-glue-toolkit/blob/main/LICENSE) file for details.

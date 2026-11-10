@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING
 from zipfile import ZIP_DEFLATED, ZipFile
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping
+    from collections.abc import Generator, Mapping
 
 __all__ = [
     "build_dependencies_zip",
@@ -74,7 +74,7 @@ def build_dependencies_zip(
 
 
 @contextmanager
-def stage_gluewheels_zip(destination: Path) -> Iterator[Path]:
+def stage_gluewheels_zip(destination: Path) -> Generator[Path, None, None]:
     """Stage ``wheels/`` in a temp directory; zip the tree on context exit.
 
     Creates ``<temp>/wheels/`` for population during assembly. After the
@@ -120,7 +120,7 @@ def write_gluewheels_tree(
         packages: Resolved package name → version pins to record.
 
     """
-    (wheels_dir / "requirements.txt").write_text(
+    _ = (wheels_dir / "requirements.txt").write_text(
         "\n".join(
             f"{name}=={version}" for name, version in sorted(packages.items())
         ),

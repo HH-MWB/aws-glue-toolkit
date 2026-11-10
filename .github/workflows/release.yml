@@ -1,51 +1,93 @@
-name: Release
+---
+name: Release to PyPI
 
+# yamllint disable-line rule:truthy
 on:
   release:
-    types: [published]
+    types:
+      - published
+      - released
   workflow_dispatch: {}
 
 permissions:
   contents: read
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   build:
+    name: Build distribution
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v8.2.0
-      - run: uv build
-      - uses: actions/upload-artifact@v7
+      - name: Check out repository
+        uses: actions/checkout@v7
         with:
-          name: dist
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.3.3
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Build distribution artifacts
+        run: uv build
+
+      - name: Store distribution artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-package-distributions
           path: dist/
 
-  testpypi:
-    if: github.event_name == 'workflow_dispatch'
+  publish-testpypi:
+    name: Publish to TestPyPI
     needs: build
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.release.prerelease
     runs-on: ubuntu-latest
-    environment: testpypi
     permissions:
+      contents: read
       id-token: write
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/aws-glue-toolkit/
     steps:
-      - uses: actions/download-artifact@v8
+      - name: Download distribution artifacts
+        uses: actions/download-artifact@v8
         with:
-          name: dist
+          name: python-package-distributions
           path: dist/
-      - uses: pypa/gh-action-pypi-publish@release/v1
+
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
         with:
           repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
 
-  pypi:
-    if: github.event_name == 'release'
+  publish-pypi:
+    name: Publish to PyPI
     needs: build
+    if: >-
+      github.event_name == 'release' &&
+      !github.event.release.prerelease
     runs-on: ubuntu-latest
-    environment: pypi
     permissions:
+      contents: read
       id-token: write
+    environment:
+      name: pypi
+      url: https://pypi.org/project/aws-glue-toolkit/
     steps:
-      - uses: actions/download-artifact@v8
+      - name: Download distribution artifacts
+        uses: actions/download-artifact@v8
         with:
-          name: dist
+          name: python-package-distributions
           path: dist/
-      - uses: pypa/gh-action-pypi-publish@release/v1
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true

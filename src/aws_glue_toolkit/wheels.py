@@ -17,17 +17,19 @@ from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name, parse_wheel_filename
 
 from aws_glue_toolkit.requirements import (
-    GlueImagePinPolicy,
     PipError,
-    PipRunner,
-    PreparedRequirements,
-    _pip_workspace,
-    _volume_mounts_for,
+    pip_workspace,
+    volume_mounts_for,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
+    from aws_glue_toolkit.requirements import (
+        GlueImagePinPolicy,
+        PipRunner,
+        PreparedRequirements,
+    )
     from aws_glue_toolkit.runtime import GlueRuntimeMetadata
 
 __all__ = ["bundle_wheels"]
@@ -54,7 +56,7 @@ def _dry_run_install_report(
             "--report",
             str(report_path),
         ],
-        _volume_mounts_for(work, prepared),
+        volume_mounts_for(work, prepared),
     )
     data = loads(report_path.read_text(encoding="utf-8"))
     return {
@@ -93,7 +95,7 @@ def _wheel_direct_url_deps(
     if not url_specs:
         return
     direct_in = work / "direct.in"
-    direct_in.write_text("\n".join(url_specs), encoding="utf-8")
+    _ = direct_in.write_text("\n".join(url_specs), encoding="utf-8")
     runner(
         [
             "wheel",
@@ -173,7 +175,7 @@ def _ensure_pin_wheel(
 ) -> None:
     """Ensure one pin has a wheel in ``dest`` (binary, else sdist→wheel)."""
     pin_in = work / "pin.in"
-    pin_in.write_text(pin + "\n", encoding="utf-8")
+    _ = pin_in.write_text(pin + "\n", encoding="utf-8")
     try:
         runner(
             [
@@ -210,11 +212,11 @@ def _bundle_cross_platform(
 ) -> None:
     """Wheel path/VCS deps, then ensure a portable wheel per resolved pin."""
     runtime = policy.runtime
-    with _pip_workspace(
+    with pip_workspace(
         prepared.rewritten_specs,
         policy.constraint_pins,
     ) as work:
-        mounts = _volume_mounts_for(
+        mounts = volume_mounts_for(
             work,
             prepared,
             staging_parent=dest.parent,
@@ -246,7 +248,7 @@ def _bundle_in_container(
     runner: PipRunner,
 ) -> None:
     """Build all wheels with ``pip wheel`` in the Glue container."""
-    with _pip_workspace(
+    with pip_workspace(
         prepared.rewritten_specs,
         policy.constraint_pins,
     ) as work:
@@ -261,7 +263,7 @@ def _bundle_in_container(
                 str(dest),
                 "--no-cache-dir",
             ],
-            _volume_mounts_for(
+            volume_mounts_for(
                 work,
                 prepared,
                 staging_parent=dest.parent,

@@ -58,7 +58,7 @@ Each job is a directory containing `pyproject.toml`. `gtk` reads the `[project]`
 | `project.name` | yes | — | Job name; used in artifact file names |
 | `project.version` | no | `0.0.0` | Job version; used in artifact file names |
 | `project.dependencies` | no | `[]` | Direct dependencies (PEP 508: PyPI, `file:`, Git) |
-| `tool.aws-glue-toolkit.glue_version` | yes | — | Glue release; bundled pins for `5.0` and `5.1` |
+| `tool.aws-glue-toolkit.glue_version` | yes | — | Glue release; bundled pins for `5.0`, `5.1`, and `6.0` |
 | `tool.aws-glue-toolkit.source` | yes | — | Source directory, relative to the job root |
 | `tool.aws-glue-toolkit.script` | yes | — | Entry script, relative to `source` |
 | `tool.aws-glue-toolkit.tests` | no | `tests` | Test directory, relative to the job root |
@@ -103,4 +103,4 @@ Success is `0`; unhandled errors are `1`. **`build`** uses the codes above. **`r
 
 ## License
 
-This project is licensed under the MIT License — see the [LICENSE](https://github.com/HH-MWB/aws-glue-toolkit/blob/main/LICENSE) file for details.
+This project is licensed under the MIT License — see the [LICENSE](https://github.com/awesome-glue/aws-glue-toolkit/blob/main/LICENSE) file for details.

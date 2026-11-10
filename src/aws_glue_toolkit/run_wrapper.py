@@ -56,7 +56,7 @@ def _run_script(script: str) -> int:
         sys.path.insert(0, script_dir)
 
     try:
-        runpy.run_path(script, run_name="__main__")
+        _ = runpy.run_path(script, run_name="__main__")
     except SystemExit as exc:
         return _exit_code(exc.code)
     # Propagate script failures as a non-zero exit for spark-submit.
@@ -69,7 +69,7 @@ def _run_script(script: str) -> int:
 def main() -> None:
     """Run the job script, then shut down the driver so the container exits."""
     if len(sys.argv) < _MIN_ARGV:
-        sys.stderr.write("usage: run_wrapper.py SCRIPT [args...]\n")
+        _ = sys.stderr.write("usage: run_wrapper.py SCRIPT [args...]\n")
         _exit(_USAGE_EXIT)
 
     script = sys.argv[1]
